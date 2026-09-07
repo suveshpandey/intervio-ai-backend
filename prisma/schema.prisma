@@ -50,7 +50,7 @@ model Resume {
   id     String @id @default(uuid())
   userId String @map("user_id")
 
-  fileUrl     String      @map("file_url") // R2 object key
+  fileUrl     String      @map("file_url") // S3 object key
   fileName    String      @map("file_name")
   fileHash    String      @map("file_hash") // sha256, for dedupe + caching extraction
   parseStatus ParseStatus @default(pending) @map("parse_status")
