@@ -28,6 +28,9 @@ const schema = z.object({
   R2_SECRET_ACCESS_KEY: z.string().optional(),
   R2_BUCKET: z.string().default('intervio-resumes'),
   R2_ENDPOINT: z.string().url().optional(),
+
+  EURI_API_KEY: z.string().optional(),
+  EURI_BASE_URL: z.string().url().default('https://api.euron.one/api/v1/euri'),
 });
 
 // Treat empty-string env vars (common in .env files) as absent so optional fields validate.
@@ -59,3 +62,6 @@ export const googleOAuthEnabled = Boolean(
 export const r2Enabled = Boolean(
   env.R2_ACCOUNT_ID && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_ENDPOINT,
 );
+
+/** True once the euri LLM gateway key is present. */
+export const llmEnabled = Boolean(env.EURI_API_KEY);

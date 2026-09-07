@@ -1,4 +1,4 @@
-// Intervio — Phase 0 schema. Only `users`; other tables are added per build phase.
+// Intervio schema. Tables are added per build phase.
 generator client {
   provider = "prisma-client-js"
 }
@@ -13,6 +13,21 @@ enum AuthProvider {
   google
 }
 
+enum ParseStatus {
+  pending
+  processing
+  done
+  failed
+}
+
+enum ClaimStatus {
+  pending
+  selected
+  verified
+  partial
+  insufficient
+}
+
 model User {
   id           String       @id @default(uuid())
   email        String       @unique
@@ -25,5 +40,69 @@ model User {
   updatedAt DateTime  @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")
 
+  resumes         Resume[]
+  jobDescriptions JobDescription[]
+
   @@map("users")
+}
+
+model Resume {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+
+  fileUrl     String      @map("file_url") // R2 object key
+  fileName    String      @map("file_name")
+  fileHash    String      @map("file_hash") // sha256, for dedupe + caching extraction
+  parseStatus ParseStatus @default(pending) @map("parse_status")
+  parseError  String?     @map("parse_error")
+
+  // { skills: [...], projects: [...], experience: [...] }
+  extracted Json?
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  claims Claim[]
+
+  @@index([userId])
+  @@map("resumes")
+}
+
+model JobDescription {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+
+  rawText        String @map("raw_text")
+  requiredSkills Json   @default("[]") @map("required_skills") // string[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("job_descriptions")
+}
+
+model Claim {
+  id       String @id @default(uuid())
+  resumeId String @map("resume_id")
+
+  text          String
+  category      String // e.g. scale, impact, ownership, tech-depth
+  relatedSkills String[] @map("related_skills")
+  importance    Int      @default(3) // 1–5: how central to the resume
+  priority      Int      @default(3) // 1–5: how worth probing
+  status        ClaimStatus @default(pending)
+  confidence    Float? // set after the interview
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  resume Resume @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+
+  @@index([resumeId])
+  @@map("claims")
 }

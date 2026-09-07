@@ -9,6 +9,9 @@ import { errorHandler, notFoundHandler } from '@/common/http';
 import { prisma } from '@/db/prisma';
 import { redis } from '@/db/redis';
 import { authRouter } from '@/auth/auth.routes';
+import { resumeRouter } from '@/modules/resume/resume.routes';
+import { jdRouter } from '@/modules/jd/jd.routes';
+import { startParseWorker } from '@/jobs/parse.worker';
 
 const app = express();
 
@@ -33,6 +36,8 @@ app.get('/health', async (_req, res) => {
 });
 
 app.use('/auth', authRouter);
+app.use('/resumes', resumeRouter);
+app.use('/jd', jdRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
@@ -41,10 +46,13 @@ const server = app.listen(env.PORT, () => {
   logger.info(`🚀 intervio-backend listening on :${env.PORT} (${env.NODE_ENV})`);
 });
 
+// Background worker runs in-process alongside the API for the MVP.
+const parseWorker = startParseWorker();
+
 async function shutdown(signal: string) {
   logger.info(`${signal} received — shutting down`);
   server.close();
-  await Promise.allSettled([prisma.$disconnect(), redis.quit()]);
+  await Promise.allSettled([parseWorker.close(), prisma.$disconnect(), redis.quit()]);
   process.exit(0);
 }
 
