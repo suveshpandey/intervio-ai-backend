@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import type { Request, Response } from 'express';
 import { nanoid } from 'nanoid';
 import { badRequest, notFound } from '@/common/errors';
-import { putObject, deleteObject } from '@/storage/r2';
+import { param } from '@/common/http';
+import { putObject, deleteObject } from '@/storage/s3';
 import { ACCEPTED_MIME } from '@/modules/resume/text-extract';
 import { resumeRepository } from '@/modules/resume/resume.repository';
 import { claimRepository } from '@/modules/intelligence/claim.repository';
@@ -56,14 +57,14 @@ export const resumeController = {
   },
 
   async detail(req: Request, res: Response) {
-    const resume = await resumeRepository.findById(req.params.id!, req.userId!);
+    const resume = await resumeRepository.findById(param(req, 'id'), req.userId!);
     if (!resume) throw notFound('Resume not found');
     const claims = await claimRepository.listByResume(resume.id);
     res.json({ resume: publicResume(resume), claims });
   },
 
   async remove(req: Request, res: Response) {
-    const resume = await resumeRepository.findById(req.params.id!, req.userId!);
+    const resume = await resumeRepository.findById(param(req, 'id'), req.userId!);
     if (!resume) throw notFound('Resume not found');
     await resumeRepository.softDelete(resume.id, req.userId!);
     await deleteObject(resume.fileUrl).catch(() => {}); // best-effort storage purge

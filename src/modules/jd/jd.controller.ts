@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '@/db/prisma';
 import { notFound } from '@/common/errors';
+import { param } from '@/common/http';
 import { parseJd } from '@/modules/intelligence/extraction';
 
 const jdInput = z.object({ rawText: z.string().min(30, 'Paste a fuller job description') });
@@ -19,7 +20,7 @@ export const jdController = {
 
   async detail(req: Request, res: Response) {
     const jd = await prisma.jobDescription.findFirst({
-      where: { id: req.params.id!, userId: req.userId! },
+      where: { id: param(req, 'id'), userId: req.userId! },
     });
     if (!jd) throw notFound('Job description not found');
     res.json({ jd });

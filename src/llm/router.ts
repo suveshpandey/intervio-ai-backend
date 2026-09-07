@@ -24,12 +24,12 @@ export async function chat(
  * Get schema-valid JSON from an LLM task.
  * Strategy: call → validate → one repair retry → throw (caller supplies a safe fallback).
  */
-export async function completeJson<T>(
+export async function completeJson<S extends z.ZodTypeAny>(
   task: LlmTask,
-  schema: z.ZodType<T>,
+  schema: S,
   messages: ChatMessage[],
   opts: ChatOptions = {},
-): Promise<{ data: T; usage: ChatResult['usage'] }> {
+): Promise<{ data: z.infer<S>; usage: ChatResult['usage'] }> {
   const first = await chat(task, messages, { ...opts, json: true });
   const parsed = tryParse(schema, first.content);
   if (parsed) return { data: parsed, usage: first.usage };

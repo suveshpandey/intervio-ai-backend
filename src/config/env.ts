@@ -23,11 +23,10 @@ const schema = z.object({
   GOOGLE_REDIRECT_URI: z.string().url().optional(),
   OAUTH_SUCCESS_REDIRECT: z.string().url().default('http://localhost:3000/dashboard'),
 
-  R2_ACCOUNT_ID: z.string().optional(),
-  R2_ACCESS_KEY_ID: z.string().optional(),
-  R2_SECRET_ACCESS_KEY: z.string().optional(),
-  R2_BUCKET: z.string().default('intervio-resumes'),
-  R2_ENDPOINT: z.string().url().optional(),
+  AWS_REGION: z.string().default('ap-south-1'),
+  AWS_ACCESS_KEY_ID: z.string().optional(),
+  AWS_SECRET_ACCESS_KEY: z.string().optional(),
+  S3_BUCKET: z.string().default('intervio-resumes'),
 
   EURI_API_KEY: z.string().optional(),
   EURI_BASE_URL: z.string().url().default('https://api.euron.one/api/v1/euri'),
@@ -58,10 +57,8 @@ export const googleOAuthEnabled = Boolean(
   env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET && env.GOOGLE_REDIRECT_URI,
 );
 
-/** True once R2 credentials are present. */
-export const r2Enabled = Boolean(
-  env.R2_ACCOUNT_ID && env.R2_ACCESS_KEY_ID && env.R2_SECRET_ACCESS_KEY && env.R2_ENDPOINT,
-);
+/** True once S3 credentials are present. */
+export const s3Enabled = Boolean(env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY);
 
 /** True once the euri LLM gateway key is present. */
 export const llmEnabled = Boolean(env.EURI_API_KEY);

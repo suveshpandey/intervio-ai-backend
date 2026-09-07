@@ -1,7 +1,7 @@
 import { Worker } from 'bullmq';
 import { bullConnection, type ParseJobData } from '@/jobs/queue';
 import { logger } from '@/common/logger';
-import { getObject } from '@/storage/r2';
+import { getObject } from '@/storage/s3';
 import { resumeRepository } from '@/modules/resume/resume.repository';
 import { claimRepository } from '@/modules/intelligence/claim.repository';
 import { extractResumeText, type ResumeFileType } from '@/modules/resume/text-extract';

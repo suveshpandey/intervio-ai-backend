@@ -11,7 +11,7 @@ export function extractJson(raw: string): string {
 }
 
 /** Parse + validate against a schema. Returns null on failure (caller decides what to do). */
-export function tryParse<T>(schema: z.ZodType<T>, raw: string): T | null {
+export function tryParse<S extends z.ZodTypeAny>(schema: S, raw: string): z.infer<S> | null {
   try {
     return schema.parse(JSON.parse(extractJson(raw)));
   } catch {

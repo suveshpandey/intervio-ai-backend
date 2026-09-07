@@ -23,3 +23,10 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
 export function notFoundHandler(_req: Request, res: Response) {
   res.status(404).json({ error: 'Not found' });
 }
+
+/** Read a required route param as a string (Express 5 types params as string | string[]). */
+export function param(req: Request, name: string): string {
+  const value = req.params[name];
+  if (typeof value !== 'string') throw new AppError(400, `Missing route parameter: ${name}`, 'bad_param');
+  return value;
+}
