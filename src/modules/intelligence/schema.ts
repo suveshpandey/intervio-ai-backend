@@ -9,6 +9,9 @@ export const extractedResumeSchema = z.object({
         name: z.string(),
         description: z.string().default(''),
         tech: z.array(z.string()).default([]),
+        // 'professional' = built during a job/internship (org set); 'personal' = independent/side.
+        origin: z.enum(['personal', 'professional']).default('personal'),
+        org: z.string().optional(),
       }),
     )
     .default([]),

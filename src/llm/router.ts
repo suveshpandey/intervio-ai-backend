@@ -21,7 +21,7 @@ export async function chat(
 }
 
 const DEFAULT_JSON_TOKENS = 2048;
-const MAX_JSON_TOKENS = 8192;
+const MAX_JSON_TOKENS = 16384;
 
 /**
  * Get schema-valid JSON from an LLM task. Two distinct failure modes, handled differently:

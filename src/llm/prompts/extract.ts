@@ -18,9 +18,13 @@ export function resumeExtractionPrompt(resumeText: string): ChatMessage[] {
       content:
         `You extract structured data from a developer resume. ${INJECTION_GUARD}\n` +
         `Return ONLY a JSON object with this shape:\n` +
-        `{"skills":string[],"projects":[{"name":string,"description":string,"tech":string[]}],` +
+        `{"skills":string[],` +
+        `"projects":[{"name":string,"description":string,"tech":string[],"origin":"personal"|"professional","org":string}],` +
         `"experience":[{"company":string,"role":string,"duration":string,"highlights":string[]}],` +
         `"summary":string}\n` +
+        `Projects: capture notable, NAMED projects from BOTH the projects section AND ones built during a job or internship. ` +
+        `Set origin="professional" and org=<company> for anything built at a company/internship; origin="personal" (omit org) for independent/side projects. ` +
+        `Do not list the same project twice. Still fill experience with each role and its highlight bullets.\n` +
         `Be faithful to the resume. Do not invent skills or projects that aren't present.`,
     },
     { role: 'user', content: fenced(resumeText) },

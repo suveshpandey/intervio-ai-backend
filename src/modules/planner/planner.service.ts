@@ -5,6 +5,7 @@ import { completeJson } from '@/llm/router';
 import { planPrompt } from '@/llm/prompts/plan';
 import { resumeRepository } from '@/modules/resume/resume.repository';
 import { claimRepository } from '@/modules/intelligence/claim.repository';
+import { extractedResumeSchema } from '@/modules/intelligence/schema';
 import { blueprintRepository } from '@/modules/planner/blueprint.repository';
 import {
   planLlmSchema,
@@ -38,9 +39,18 @@ export async function buildBlueprint(userId: string, config: BlueprintConfig) {
   }
 
   // flash spends output tokens on reasoning before the JSON — budget generously.
-  const { data: plan } = await completeJson('plan', planLlmSchema, planPrompt(claims, jdSkills, config), {
-    maxTokens: 4096,
-  });
+  // Projects (with origin/org) give the planner richer grounding than claims alone.
+  const parsedResume = extractedResumeSchema.safeParse(resume.extracted);
+  const projects = parsedResume.success ? parsedResume.data.projects : [];
+
+  // gemini-2.5-flash spends hidden "thinking" tokens before the JSON, and that scales
+  // with prompt size — budget high up front so we don't waste a truncated first call.
+  const { data: plan } = await completeJson(
+    'plan',
+    planLlmSchema,
+    planPrompt(claims, jdSkills, config, projects),
+    { maxTokens: 8192 },
+  );
 
   const sections = normalizeSections(plan.sections, config.durationMin);
   const probeClaimIds = selectClaims(plan.probeClaimIds, claims, jdSkills);
