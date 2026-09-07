@@ -18,6 +18,8 @@ export interface ChatResult {
   content: string;
   usage: { input: number; output: number };
   model: string;
+  /** True when the model hit the max_tokens cap — the content is cut off, not malformed. */
+  truncated: boolean;
 }
 
 /** Low-level call to euri's OpenAI-compatible chat/completions endpoint. */
@@ -38,7 +40,7 @@ export async function callEuri(
       model,
       messages,
       temperature: opts.temperature ?? 0.2,
-      max_tokens: opts.maxTokens ?? 1024,
+      max_tokens: opts.maxTokens ?? 2048,
       ...(opts.json ? { response_format: { type: 'json_object' } } : {}),
     }),
     signal: opts.signal,
@@ -50,14 +52,15 @@ export async function callEuri(
   }
 
   const data = (await res.json()) as {
-    choices?: { message?: { content?: string } }[];
+    choices?: { message?: { content?: string }; finish_reason?: string }[];
     usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
 
-  const content = data.choices?.[0]?.message?.content ?? '';
+  const choice = data.choices?.[0];
   return {
-    content,
+    content: choice?.message?.content ?? '',
     usage: { input: data.usage?.prompt_tokens ?? 0, output: data.usage?.completion_tokens ?? 0 },
     model,
+    truncated: choice?.finish_reason === 'length',
   };
 }

@@ -16,12 +16,17 @@ import {
 const MAX_CLAIMS = 20;
 
 export async function extractResume(resumeText: string): Promise<ExtractedResume> {
-  const { data } = await completeJson('extract', extractedResumeSchema, resumeExtractionPrompt(resumeText));
+  const { data } = await completeJson('extract', extractedResumeSchema, resumeExtractionPrompt(resumeText), {
+    maxTokens: 2048,
+  });
   return data;
 }
 
 export async function extractClaims(resumeText: string): Promise<ExtractedClaim[]> {
-  const { data } = await completeJson('extract', claimsSchema, claimExtractionPrompt(resumeText));
+  // 10–20 claims with skills + scores is a large object — budget generously up front.
+  const { data } = await completeJson('extract', claimsSchema, claimExtractionPrompt(resumeText), {
+    maxTokens: 4096,
+  });
   return dedupeAndCap(data.claims);
 }
 
