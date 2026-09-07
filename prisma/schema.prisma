@@ -42,6 +42,7 @@ model User {
 
   resumes         Resume[]
   jobDescriptions JobDescription[]
+  blueprints      Blueprint[]
 
   @@map("users")
 }
@@ -63,8 +64,9 @@ model Resume {
   updatedAt DateTime  @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")
 
-  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  claims Claim[]
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  claims     Claim[]
+  blueprints Blueprint[]
 
   @@index([userId])
   @@map("resumes")
@@ -105,4 +107,31 @@ model Claim {
 
   @@index([resumeId])
   @@map("claims")
+}
+
+/// The interview plan: config + ordered sections + which claims to probe.
+/// Built once (Phase 2) so the live engine never needs the raw resume/JD.
+model Blueprint {
+  id       String  @id @default(uuid())
+  userId   String  @map("user_id")
+  resumeId String  @map("resume_id")
+  jdId     String? @map("jd_id")
+
+  role        String
+  level       String // junior | mid | senior
+  difficulty  String // easy | standard | hard
+  durationMin Int    @map("duration_min")
+
+  sections      Json     // ordered [{ key, title, budgetMin }]
+  probeClaimIds String[] @map("probe_claim_ids") // ordered claim ids to challenge
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resume Resume @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([resumeId])
+  @@map("blueprints")
 }
