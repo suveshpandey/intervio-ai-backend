@@ -43,6 +43,7 @@ model User {
   resumes         Resume[]
   jobDescriptions JobDescription[]
   blueprints      Blueprint[]
+  interviews      Interview[]
 
   @@map("users")
 }
@@ -103,10 +104,86 @@ model Claim {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  resume Resume @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+  resume   Resume     @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+  evidence Evidence[]
 
   @@index([resumeId])
   @@map("claims")
+}
+
+/// A live (or finished) interview session. The plan lives on the Blueprint;
+/// this row is the session: status + timing. Durable turn-by-turn state is in
+/// Redis and checkpointed here via `turns`.
+model Interview {
+  id          String @id @default(uuid())
+  userId      String @map("user_id")
+  blueprintId String @map("blueprint_id")
+
+  status    String    @default("planned") // planned | live | completed | abandoned
+  startedAt DateTime? @map("started_at")
+  endedAt   DateTime? @map("ended_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  blueprint Blueprint  @relation(fields: [blueprintId], references: [id], onDelete: Cascade)
+  turns     Turn[]
+  evidence  Evidence[]
+
+  @@index([userId])
+  @@index([blueprintId])
+  @@map("interviews")
+}
+
+/// One question/answer exchange. `eval` holds the LLM's structured judgement;
+/// `chosenAction` is what OUR engine actually decided (may differ from the suggestion).
+model Turn {
+  id          String @id @default(uuid())
+  interviewId String @map("interview_id")
+
+  idx          Int
+  sectionKey   String  @map("section_key")
+  objective    String
+  questionText String  @map("question_text")
+  claimId      String? @map("claim_id") // the claim being probed, when applicable
+
+  answerTranscript String? @map("answer_transcript")
+  eval             Json? // { answerQuality, technicalDepth, claimEvidence, issue, reason, ... }
+  chosenAction     String? @map("chosen_action")
+
+  askedAt    DateTime  @default(now()) @map("asked_at")
+  answeredAt DateTime? @map("answered_at")
+
+  interview Interview  @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  evidence  Evidence[]
+
+  @@unique([interviewId, idx])
+  @@index([interviewId])
+  @@map("turns")
+}
+
+/// Support/weaken signal for a claim, written as the interview runs.
+/// The final claim audit (Phase 5) aggregates these.
+model Evidence {
+  id          String @id @default(uuid())
+  interviewId String @map("interview_id")
+  claimId     String @map("claim_id")
+  turnId      String @map("turn_id")
+
+  polarity  String // support | weaken
+  weight    Float // 0–1
+  rationale String
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+  claim     Claim     @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  turn      Turn      @relation(fields: [turnId], references: [id], onDelete: Cascade)
+
+  @@index([interviewId])
+  @@index([claimId])
+  @@map("evidence")
 }
 
 /// The interview plan: config + ordered sections + which claims to probe.
@@ -128,8 +205,9 @@ model Blueprint {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  resume Resume @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  resume     Resume      @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+  interviews Interview[]
 
   @@index([userId])
   @@index([resumeId])
