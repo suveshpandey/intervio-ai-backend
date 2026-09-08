@@ -11,6 +11,8 @@ export interface ChatOptions {
   maxTokens?: number;
   /** Ask the gateway for a JSON object response (ignored gracefully if unsupported). */
   json?: boolean;
+  /** Model "thinking" budget. 'none' cuts latency ~5x — use it for live-interview turns. */
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
   signal?: AbortSignal;
 }
 
@@ -42,6 +44,7 @@ export async function callEuri(
       temperature: opts.temperature ?? 0.2,
       max_tokens: opts.maxTokens ?? 2048,
       ...(opts.json ? { response_format: { type: 'json_object' } } : {}),
+      ...(opts.reasoningEffort ? { reasoning_effort: opts.reasoningEffort } : {}),
     }),
     signal: opts.signal,
   });

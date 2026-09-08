@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import { MODEL_POLICY, FALLBACK_MODEL, type LlmTask } from '@/config/models';
+import { MODEL_POLICY, FALLBACK_MODEL, TASK_REASONING, type LlmTask } from '@/config/models';
 import { callEuri, type ChatMessage, type ChatOptions, type ChatResult } from '@/llm/client';
 import { tryParse } from '@/llm/json';
 import { AppError } from '@/common/errors';
@@ -12,11 +12,16 @@ export async function chat(
   opts: ChatOptions = {},
 ): Promise<ChatResult> {
   const primary = MODEL_POLICY[task];
+  // Task policy sets the thinking budget unless the caller overrides it.
+  const withReasoning: ChatOptions = {
+    ...opts,
+    reasoningEffort: opts.reasoningEffort ?? TASK_REASONING[task],
+  };
   try {
-    return await callEuri(primary, messages, opts);
+    return await callEuri(primary, messages, withReasoning);
   } catch (err) {
     logger.warn({ err, task, primary }, 'LLM primary failed — falling back');
-    return callEuri(FALLBACK_MODEL, messages, opts);
+    return callEuri(FALLBACK_MODEL, messages, withReasoning);
   }
 }
 
