@@ -14,6 +14,15 @@ const credentialsSchema = z.object({
   name: z.string().min(1).max(120).optional(),
 });
 
+const updateProfileSchema = z.object({
+  name: z.string().trim().min(1, 'Name cannot be empty').max(120),
+});
+
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, 'Enter your current password'),
+  newPassword: z.string().min(8, 'New password must be at least 8 characters'),
+});
+
 const OAUTH_STATE_COOKIE = 'intervio_oauth_state';
 
 export const authController = {
@@ -49,6 +58,20 @@ export const authController = {
     const user = req.userId ? await userRepository.findById(req.userId) : null;
     if (!user) throw unauthorized('Not authenticated');
     res.json({ user: toPublicUser(user) });
+  },
+
+  async updateMe(req: Request, res: Response) {
+    if (!req.userId) throw unauthorized('Not authenticated');
+    const { name } = updateProfileSchema.parse(req.body);
+    const user = await authService.updateProfile(req.userId, { name });
+    res.json({ user: toPublicUser(user) });
+  },
+
+  async changePassword(req: Request, res: Response) {
+    if (!req.userId) throw unauthorized('Not authenticated');
+    const { currentPassword, newPassword } = changePasswordSchema.parse(req.body);
+    await authService.changePassword(req.userId, currentPassword, newPassword);
+    res.json({ ok: true });
   },
 
   // ── Google OAuth ───────────────────────────────────────

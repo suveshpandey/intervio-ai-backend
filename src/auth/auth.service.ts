@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import type { User } from '@prisma/client';
 import { userRepository } from '@/db/user.repository';
-import { conflict, unauthorized } from '@/common/errors';
+import { badRequest, conflict, unauthorized } from '@/common/errors';
 import { logger } from '@/common/logger';
 import {
   signAccessToken,
@@ -79,6 +79,25 @@ export const authService = {
     } catch {
       // Already invalid — nothing to revoke.
     }
+  },
+
+  /** Update editable profile fields (currently just the display name). */
+  async updateProfile(userId: string, data: { name?: string }): Promise<User> {
+    return userRepository.updateProfile(userId, data);
+  },
+
+  /** Change password for an email/password account after verifying the current one. */
+  async changePassword(userId: string, currentPassword: string, newPassword: string): Promise<void> {
+    const user = await userRepository.findById(userId);
+    if (!user) throw unauthorized('Not authenticated');
+    if (!user.passwordHash)
+      throw badRequest('Password change is not available for Google sign-in accounts', 'no_password');
+
+    const ok = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!ok) throw badRequest('Current password is incorrect', 'wrong_password');
+
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+    await userRepository.updatePassword(userId, passwordHash);
   },
 
   /** Find-or-create a user from a verified Google identity, then issue tokens. */

@@ -10,6 +10,8 @@ authRouter.post('/login', authController.login);
 authRouter.post('/refresh', authController.refresh);
 authRouter.post('/logout', authController.logout);
 authRouter.get('/me', requireAuth, authController.me);
+authRouter.patch('/me', requireAuth, authController.updateMe);
+authRouter.post('/change-password', requireAuth, authController.changePassword);
 
 if (googleOAuthEnabled) {
   authRouter.get('/google', authController.googleStart);

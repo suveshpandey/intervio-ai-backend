@@ -22,4 +22,12 @@ export const userRepository = {
       data: { ...data, email: data.email.toLowerCase() },
     });
   },
+
+  updateProfile(id: string, data: { name?: string; avatarUrl?: string }): Promise<User> {
+    return prisma.user.update({ where: { id }, data });
+  },
+
+  updatePassword(id: string, passwordHash: string): Promise<User> {
+    return prisma.user.update({ where: { id }, data: { passwordHash } });
+  },
 };
