@@ -33,7 +33,7 @@ const schema = z.object({
 
   // Email — sent via AWS SES. Two supported transports (auto-selected):
   //  • SMTP: set SMTP_USER / SMTP_PASS to your SES SMTP credentials, or
-  //  • SES API: leave SMTP_* blank and it uses the AWS_* keys above (needs ses:SendEmail).
+  //  • SES API: uses SES_* keys if set (dedicated SES IAM user), else the AWS_* keys.
   EMAIL_ENABLED: z
     .enum(['true', 'false'])
     .default('true')
@@ -42,6 +42,11 @@ const schema = z.object({
   SMTP_PORT: z.coerce.number().default(587),
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
+  // Dedicated SES IAM user (optional) — if set, the SES API path uses these instead
+  // of AWS_*. Region falls back to AWS_REGION when SES_REGION is absent.
+  SES_ACCESS_KEY_ID: z.string().optional(),
+  SES_SECRET_ACCESS_KEY: z.string().optional(),
+  SES_REGION: z.string().optional(),
   EMAIL_FROM: z.string().email().optional(), // must be an SES-verified sender identity
   EMAIL_FROM_NAME: z.string().default('Intervio.ai'),
 
@@ -80,12 +85,19 @@ export const s3Enabled = Boolean(env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_
 /** True once the euri LLM gateway key is present. */
 export const llmEnabled = Boolean(env.EURI_API_KEY);
 
-/** Which SES transport to use: SMTP creds win, else the SES API (AWS keys). */
+/** Resolved SES API credentials + region: dedicated SES_* keys win, else the shared AWS_*. */
+export const sesConfig = {
+  region: env.SES_REGION ?? env.AWS_REGION,
+  accessKeyId: env.SES_ACCESS_KEY_ID ?? env.AWS_ACCESS_KEY_ID,
+  secretAccessKey: env.SES_SECRET_ACCESS_KEY ?? env.AWS_SECRET_ACCESS_KEY,
+};
+
+/** Which SES transport to use: SMTP creds win, else the SES API (SES_* or AWS_* keys). */
 export const emailTransport: 'smtp' | 'ses' | null =
   env.EMAIL_ENABLED && env.EMAIL_FROM
     ? env.SMTP_USER && env.SMTP_PASS
       ? 'smtp'
-      : env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY
+      : sesConfig.accessKeyId && sesConfig.secretAccessKey
         ? 'ses'
         : null
     : null;

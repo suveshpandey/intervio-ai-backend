@@ -1,6 +1,6 @@
 import nodemailer, { type Transporter } from 'nodemailer';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
-import { env, emailTransport, isProd } from '@/config/env';
+import { env, emailTransport, sesConfig, isProd } from '@/config/env';
 import { logger } from '@/common/logger';
 
 // AWS SES, via whichever transport is configured (SMTP creds win, else the SES API).
@@ -20,10 +20,10 @@ function smtpTransport(): Transporter {
 const ses =
   emailTransport === 'ses'
     ? new SESv2Client({
-        region: env.AWS_REGION,
+        region: sesConfig.region,
         credentials: {
-          accessKeyId: env.AWS_ACCESS_KEY_ID!,
-          secretAccessKey: env.AWS_SECRET_ACCESS_KEY!,
+          accessKeyId: sesConfig.accessKeyId!,
+          secretAccessKey: sesConfig.secretAccessKey!,
         },
       })
     : null;

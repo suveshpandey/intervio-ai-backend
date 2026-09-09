@@ -13,6 +13,7 @@ import { authRouter } from '@/auth/auth.routes';
 import { resumeRouter } from '@/modules/resume/resume.routes';
 import { jdRouter } from '@/modules/jd/jd.routes';
 import { blueprintRouter } from '@/modules/planner/planner.routes';
+import { interviewRouter } from '@/modules/interview/interview.routes';
 import { startParseWorker } from '@/jobs/parse.worker';
 
 const app = express();
@@ -41,6 +42,7 @@ app.use('/auth', authRouter);
 app.use('/resumes', resumeRouter);
 app.use('/jd', jdRouter);
 app.use('/blueprints', blueprintRouter);
+app.use('/interviews', interviewRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
