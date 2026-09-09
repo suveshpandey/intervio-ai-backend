@@ -3,8 +3,9 @@ import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import { pinoHttp } from 'pino-http';
-import { env, corsOrigins } from '@/config/env';
+import { env, corsOrigins, emailEnabled, emailTransport } from '@/config/env';
 import { logger } from '@/common/logger';
+import { verifyTransport } from '@/email/mailer';
 import { errorHandler, notFoundHandler } from '@/common/http';
 import { prisma } from '@/db/prisma';
 import { redis } from '@/db/redis';
@@ -47,6 +48,17 @@ app.use(errorHandler);
 const server = app.listen(env.PORT, () => {
   logger.info(`🚀 intervio-backend listening on :${env.PORT} (${env.NODE_ENV})`);
 });
+
+// Non-blocking boot check so misconfigured email surfaces in logs, not at send time.
+if (emailEnabled) {
+  void verifyTransport().then((ok) =>
+    ok
+      ? logger.info({ via: emailTransport }, 'Email transport ready')
+      : logger.warn({ via: emailTransport }, 'Email transport check failed'),
+  );
+} else {
+  logger.warn('Email disabled — set EMAIL_FROM + SMTP creds (or AWS keys) to enable');
+}
 
 // Background worker runs in-process alongside the API for the MVP.
 const parseWorker = startParseWorker();

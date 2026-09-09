@@ -9,6 +9,9 @@ import {
   verifyRefreshToken,
 } from '@/auth/token.service';
 import { refreshStore } from '@/auth/refresh-store';
+import { resetStore } from '@/auth/reset-store';
+import { sendWelcomeEmail, sendPasswordResetEmail } from '@/email';
+import { env } from '@/config/env';
 
 export interface TokenPair {
   accessToken: string;
@@ -41,6 +44,8 @@ export const authService = {
     const passwordHash = await bcrypt.hash(password, 12);
     const user = await userRepository.create({ email, authProvider: 'email', passwordHash, name });
     const tokens = await issueTokens(user.id);
+    // Fire-and-forget — a mail hiccup must never fail signup.
+    void sendWelcomeEmail(user.email, user.name ?? undefined);
     return { user, tokens };
   },
 
@@ -98,6 +103,33 @@ export const authService = {
 
     const passwordHash = await bcrypt.hash(newPassword, 12);
     await userRepository.updatePassword(userId, passwordHash);
+  },
+
+  /**
+   * Begin a password reset. Always resolves (never reveals whether the email exists).
+   * Only email/password accounts get a link — Google accounts have no password to reset.
+   */
+  async requestPasswordReset(email: string): Promise<void> {
+    const user = await userRepository.findByEmail(email);
+    if (!user || !user.passwordHash) return;
+
+    const token = await resetStore.create(user.id);
+    const resetUrl = `${env.APP_URL}/reset-password?token=${token}`;
+    try {
+      await sendPasswordResetEmail(user.email, resetUrl, user.name ?? undefined);
+    } catch (err) {
+      logger.error({ err, userId: user.id }, 'Failed to send password-reset email');
+    }
+  },
+
+  /** Complete a password reset with a valid token, then sign the user out everywhere. */
+  async resetPassword(token: string, newPassword: string): Promise<void> {
+    const userId = await resetStore.consume(token);
+    if (!userId) throw badRequest('This reset link is invalid or has expired', 'invalid_token');
+
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+    await userRepository.updatePassword(userId, passwordHash);
+    await refreshStore.removeAll(userId);
   },
 
   /** Find-or-create a user from a verified Google identity, then issue tokens. */

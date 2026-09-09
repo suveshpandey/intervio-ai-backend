@@ -13,6 +13,7 @@ export function planPrompt(
   jdSkills: string[],
   config: BlueprintConfig,
   projects: ExtractedResume['projects'],
+  targetClaims: number,
 ): ChatMessage[] {
   const claimLines = claims
     .map(
@@ -36,7 +37,8 @@ export function planPrompt(
       content:
         `You are planning a ${config.durationMin}-minute ${config.difficulty} voice interview for a ${config.level}-level ${config.role}. ${GUARD}\n` +
         `Two jobs:\n` +
-        `1. Pick the 5–8 claims MOST worth probing — favour high importance × priority, measurable/impressive/risky claims, and claims whose skills match the target role. ` +
+        `1. Pick EXACTLY ${targetClaims} claim(s) — the ones MOST worth probing. There is only time for ${targetClaims} in a ${config.durationMin}-minute interview, so choose ruthlessly. ` +
+        `Favour high importance × priority, measurable/impressive/risky claims, and claims whose skills match the target role. ` +
         `Prefer claims tied to substantial PROFESSIONAL projects (built at a company) over side projects, and spread your picks across different projects rather than over-probing one.\n` +
         `2. Allocate a whole-minute time budget to each section so the budgets sum to ${config.durationMin}.\n` +
         `The sections are fixed and must appear with these exact keys: ${SECTION_KEYS.join(', ')}.\n` +

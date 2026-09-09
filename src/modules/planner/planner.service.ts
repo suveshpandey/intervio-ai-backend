@@ -17,8 +17,24 @@ import {
   type SectionKey,
 } from '@/modules/planner/schema';
 
-const MIN_PROBES = 5;
+const MIN_PROBES = 3;
 const MAX_PROBES = 8;
+
+/** Rough seconds per question+answer exchange in a live interview. */
+export const AVG_TURN_SECONDS = 45;
+/** Opening question + ~1.5 follow-ups on average (engine caps follow-ups at 2). */
+export const TURNS_PER_CLAIM = 2.5;
+
+/**
+ * How many claims the claim-verification section can honestly cover.
+ * Promising 8 claims in a 15-minute interview is a promise we can't keep, and
+ * unprobed claims poison the final report — so the plan is sized to the clock.
+ */
+export function claimCapacity(claimBudgetMin: number): number {
+  const turns = (claimBudgetMin * 60) / AVG_TURN_SECONDS;
+  const n = Math.floor(turns / TURNS_PER_CLAIM);
+  return Math.max(MIN_PROBES, Math.min(MAX_PROBES, n));
+}
 
 /** Generate + validate an interview blueprint for a resume the user owns. */
 export async function buildBlueprint(userId: string, config: BlueprintConfig) {
@@ -43,17 +59,25 @@ export async function buildBlueprint(userId: string, config: BlueprintConfig) {
   const parsedResume = extractedResumeSchema.safeParse(resume.extracted);
   const projects = parsedResume.success ? parsedResume.data.projects : [];
 
+  // Tell the planner up front how many claims actually fit, so it picks the BEST n
+  // rather than us truncating its ranked list afterwards.
+  const targetClaims = claimCapacity(config.durationMin * SECTION_WEIGHTS.claim_verification);
+
   // gemini-2.5-flash spends hidden "thinking" tokens before the JSON, and that scales
   // with prompt size — budget high up front so we don't waste a truncated first call.
   const { data: plan } = await completeJson(
     'plan',
     planLlmSchema,
-    planPrompt(claims, jdSkills, config, projects),
+    planPrompt(claims, jdSkills, config, projects, targetClaims),
     { maxTokens: 8192 },
   );
 
   const sections = normalizeSections(plan.sections, config.durationMin);
-  const probeClaimIds = selectClaims(plan.probeClaimIds, claims, jdSkills);
+  // Re-derive from the FINAL budget — the planner may have shifted section time.
+  const capacity = claimCapacity(
+    sections.find((s) => s.key === 'claim_verification')?.budgetMin ?? 0,
+  );
+  const probeClaimIds = selectClaims(plan.probeClaimIds, claims, jdSkills, capacity);
 
   return blueprintRepository.create({
     userId,
@@ -104,17 +128,22 @@ export function normalizeSections(
   return scaled;
 }
 
-/** Keep valid LLM-chosen claim ids in order, then top up to 5–8 by our own ranking. */
-export function selectClaims(llmIds: string[], claims: Claim[], jdSkills: string[]): string[] {
+/** Keep valid LLM-chosen claim ids in order, then top up to `capacity` by our own ranking. */
+export function selectClaims(
+  llmIds: string[],
+  claims: Claim[],
+  jdSkills: string[],
+  capacity: number,
+): string[] {
   const byId = new Map(claims.map((c) => [c.id, c]));
 
   const chosen: string[] = [];
   for (const id of llmIds) {
     if (byId.has(id) && !chosen.includes(id)) chosen.push(id);
   }
-  const result = chosen.slice(0, MAX_PROBES);
+  const result = chosen.slice(0, capacity);
 
-  const target = Math.min(MIN_PROBES, claims.length);
+  const target = Math.min(capacity, claims.length);
   if (result.length < target) {
     const jdLower = new Set(jdSkills.map((s) => s.toLowerCase()));
     const ranked = [...claims].sort((a, b) => score(b, jdLower) - score(a, jdLower));

@@ -23,6 +23,15 @@ const changePasswordSchema = z.object({
   newPassword: z.string().min(8, 'New password must be at least 8 characters'),
 });
 
+const forgotPasswordSchema = z.object({
+  email: z.string().email(),
+});
+
+const resetPasswordSchema = z.object({
+  token: z.string().min(10),
+  newPassword: z.string().min(8, 'New password must be at least 8 characters'),
+});
+
 const OAUTH_STATE_COOKIE = 'intervio_oauth_state';
 
 export const authController = {
@@ -71,6 +80,20 @@ export const authController = {
     if (!req.userId) throw unauthorized('Not authenticated');
     const { currentPassword, newPassword } = changePasswordSchema.parse(req.body);
     await authService.changePassword(req.userId, currentPassword, newPassword);
+    res.json({ ok: true });
+  },
+
+  // ── Password reset (public) ────────────────────────────
+  async forgotPassword(req: Request, res: Response) {
+    const { email } = forgotPasswordSchema.parse(req.body);
+    await authService.requestPasswordReset(email);
+    // Always generic — never reveal whether the account exists.
+    res.json({ ok: true });
+  },
+
+  async resetPassword(req: Request, res: Response) {
+    const { token, newPassword } = resetPasswordSchema.parse(req.body);
+    await authService.resetPassword(token, newPassword);
     res.json({ ok: true });
   },
 

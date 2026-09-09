@@ -30,6 +30,23 @@ const schema = z.object({
 
   EURI_API_KEY: z.string().optional(),
   EURI_BASE_URL: z.string().url().default('https://api.euron.one/api/v1/euri'),
+
+  // Email — sent via AWS SES. Two supported transports (auto-selected):
+  //  • SMTP: set SMTP_USER / SMTP_PASS to your SES SMTP credentials, or
+  //  • SES API: leave SMTP_* blank and it uses the AWS_* keys above (needs ses:SendEmail).
+  EMAIL_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  SMTP_HOST: z.string().default('email-smtp.ap-south-1.amazonaws.com'),
+  SMTP_PORT: z.coerce.number().default(587),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  EMAIL_FROM: z.string().email().optional(), // must be an SES-verified sender identity
+  EMAIL_FROM_NAME: z.string().default('Intervio.ai'),
+
+  // Public base URL of the frontend — used to build links in emails.
+  APP_URL: z.string().url().default('http://localhost:3000'),
 });
 
 // Treat empty-string env vars (common in .env files) as absent so optional fields validate.
@@ -62,3 +79,16 @@ export const s3Enabled = Boolean(env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_
 
 /** True once the euri LLM gateway key is present. */
 export const llmEnabled = Boolean(env.EURI_API_KEY);
+
+/** Which SES transport to use: SMTP creds win, else the SES API (AWS keys). */
+export const emailTransport: 'smtp' | 'ses' | null =
+  env.EMAIL_ENABLED && env.EMAIL_FROM
+    ? env.SMTP_USER && env.SMTP_PASS
+      ? 'smtp'
+      : env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY
+        ? 'ses'
+        : null
+    : null;
+
+/** True once a verified sender + a usable transport (SMTP or SES API) are configured. */
+export const emailEnabled = emailTransport !== null;

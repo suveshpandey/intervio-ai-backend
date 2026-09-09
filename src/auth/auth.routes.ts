@@ -12,6 +12,8 @@ authRouter.post('/logout', authController.logout);
 authRouter.get('/me', requireAuth, authController.me);
 authRouter.patch('/me', requireAuth, authController.updateMe);
 authRouter.post('/change-password', requireAuth, authController.changePassword);
+authRouter.post('/forgot-password', authController.forgotPassword);
+authRouter.post('/reset-password', authController.resetPassword);
 
 if (googleOAuthEnabled) {
   authRouter.get('/google', authController.googleStart);

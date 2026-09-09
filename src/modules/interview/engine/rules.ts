@@ -16,8 +16,12 @@ import type {
 } from '@/modules/interview/types';
 import type { PlanSection } from '@/modules/planner/schema';
 
-/** Never dig more than this many times on one topic. */
-export const MAX_FOLLOW_UPS = 3;
+/**
+ * Never dig more than this many times on one topic.
+ * 2 → at most 3 turns per claim (question + 2 follow-ups), which keeps a ~9 min
+ * claim-verification section wide enough to cover all 5–8 planned claims.
+ */
+export const MAX_FOLLOW_UPS = 2;
 /** Two weak answers in a row → make it easier. */
 export const WEAK_STREAK_LIMIT = 2;
 /** answerQuality below this counts as "weak". */
