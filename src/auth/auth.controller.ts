@@ -32,6 +32,10 @@ const resetPasswordSchema = z.object({
   newPassword: z.string().min(8, 'New password must be at least 8 characters'),
 });
 
+const deleteAccountSchema = z.object({
+  password: z.string().optional(),
+});
+
 const OAUTH_STATE_COOKIE = 'intervio_oauth_state';
 
 export const authController = {
@@ -80,6 +84,14 @@ export const authController = {
     if (!req.userId) throw unauthorized('Not authenticated');
     const { currentPassword, newPassword } = changePasswordSchema.parse(req.body);
     await authService.changePassword(req.userId, currentPassword, newPassword);
+    res.json({ ok: true });
+  },
+
+  async deleteMe(req: Request, res: Response) {
+    if (!req.userId) throw unauthorized('Not authenticated');
+    const { password } = deleteAccountSchema.parse(req.body ?? {});
+    await authService.deleteAccount(req.userId, password);
+    clearAuthCookies(res);
     res.json({ ok: true });
   },
 

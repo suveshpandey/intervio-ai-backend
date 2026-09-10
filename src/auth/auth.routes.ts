@@ -11,6 +11,7 @@ authRouter.post('/refresh', authController.refresh);
 authRouter.post('/logout', authController.logout);
 authRouter.get('/me', requireAuth, authController.me);
 authRouter.patch('/me', requireAuth, authController.updateMe);
+authRouter.delete('/me', requireAuth, authController.deleteMe);
 authRouter.post('/change-password', requireAuth, authController.changePassword);
 authRouter.post('/forgot-password', authController.forgotPassword);
 authRouter.post('/reset-password', authController.resetPassword);

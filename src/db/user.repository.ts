@@ -30,4 +30,9 @@ export const userRepository = {
   updatePassword(id: string, passwordHash: string): Promise<User> {
     return prisma.user.update({ where: { id }, data: { passwordHash } });
   },
+
+  /** Hard-delete the user row; cascades to their resumes, JDs, claims, blueprints, interviews. */
+  hardDelete(id: string): Promise<User> {
+    return prisma.user.delete({ where: { id } });
+  },
 };

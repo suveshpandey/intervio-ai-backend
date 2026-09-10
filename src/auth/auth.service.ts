@@ -132,6 +132,24 @@ export const authService = {
     await refreshStore.removeAll(userId);
   },
 
+  /**
+   * Permanently delete the account (cascades all their data) after verifying the
+   * password for email/password accounts. Google accounts need no password.
+   */
+  async deleteAccount(userId: string, password?: string): Promise<void> {
+    const user = await userRepository.findById(userId);
+    if (!user) throw unauthorized('Not authenticated');
+
+    if (user.passwordHash) {
+      if (!password) throw badRequest('Password is required to delete your account', 'password_required');
+      const ok = await bcrypt.compare(password, user.passwordHash);
+      if (!ok) throw badRequest('Password is incorrect', 'wrong_password');
+    }
+
+    await refreshStore.removeAll(userId);
+    await userRepository.hardDelete(userId);
+  },
+
   /** Find-or-create a user from a verified Google identity, then issue tokens. */
   async loginWithGoogle(profile: {
     email: string;
