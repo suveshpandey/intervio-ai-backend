@@ -50,6 +50,11 @@ const schema = z.object({
   EMAIL_FROM: z.string().email().optional(), // must be an SES-verified sender identity
   EMAIL_FROM_NAME: z.string().default('Intervio.ai'),
 
+  // Voice (Deepgram) — STT + TTS for the live interview.
+  DEEPGRAM_API_KEY: z.string().optional(),
+  DEEPGRAM_STT_MODEL: z.string().default('nova-3'),
+  DEEPGRAM_TTS_MODEL: z.string().default('aura-2-thalia-en'),
+
   // Public base URL of the frontend — used to build links in emails.
   APP_URL: z.string().url().default('http://localhost:3000'),
 });
@@ -81,6 +86,9 @@ export const googleOAuthEnabled = Boolean(
 
 /** True once S3 credentials are present. */
 export const s3Enabled = Boolean(env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY);
+
+/** True once the Deepgram key is present (voice interviews enabled). */
+export const voiceEnabled = Boolean(env.DEEPGRAM_API_KEY);
 
 /** True once the euri LLM gateway key is present. */
 export const llmEnabled = Boolean(env.EURI_API_KEY);
