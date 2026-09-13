@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { param } from '@/common/http';
+import { issueTicket } from '@/modules/interview/gateway/ticket';
 import {
   startInterview,
   submitAnswer,
@@ -36,6 +37,17 @@ export const interviewController = {
       turnSeconds ?? ESTIMATED_TURN_SECONDS,
     );
     res.json(result);
+  },
+
+  /**
+   * Exchanges the cookie session for a single-use, 60s ticket that opens the
+   * voice WebSocket (browsers can't send auth headers on a WS handshake).
+   */
+  async voiceTicket(req: Request, res: Response) {
+    const interviewId = param(req, 'id');
+    const { interview } = await getTranscript(req.userId!, interviewId); // 404s if not theirs
+    const ticket = await issueTicket({ userId: req.userId!, interviewId: interview.id });
+    res.json({ ticket, expiresInSeconds: 60 });
   },
 
   async detail(req: Request, res: Response) {

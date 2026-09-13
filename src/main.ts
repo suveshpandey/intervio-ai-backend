@@ -14,6 +14,7 @@ import { resumeRouter } from '@/modules/resume/resume.routes';
 import { jdRouter } from '@/modules/jd/jd.routes';
 import { blueprintRouter } from '@/modules/planner/planner.routes';
 import { interviewRouter } from '@/modules/interview/interview.routes';
+import { attachVoiceGateway } from '@/modules/interview/gateway/ws';
 import { startParseWorker } from '@/jobs/parse.worker';
 
 const app = express();
@@ -62,12 +63,16 @@ if (emailEnabled) {
   logger.warn('Email disabled — set EMAIL_FROM + SMTP creds (or AWS keys) to enable');
 }
 
+// Live voice interviews share the HTTP server (ws upgrade on /voice).
+const voiceGateway = attachVoiceGateway(server);
+
 // Background worker runs in-process alongside the API for the MVP.
 const parseWorker = startParseWorker();
 
 async function shutdown(signal: string) {
   logger.info(`${signal} received — shutting down`);
   server.close();
+  voiceGateway.close();
   await Promise.allSettled([parseWorker.close(), prisma.$disconnect(), redis.quit()]);
   process.exit(0);
 }
