@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { VOICE_IDS, DEFAULT_VOICE } from '@/modules/voice/voices';
 
 // ── Fixed interview shape (order matters; the engine walks these in sequence) ──
 export const SECTION_KEYS = ['intro', 'claim_verification', 'fundamentals', 'problem_solving', 'wrap'] as const;
@@ -32,6 +33,8 @@ export const blueprintConfigSchema = z.object({
   level: z.enum(LEVELS),
   difficulty: z.enum(DIFFICULTIES),
   durationMin: z.number().int().min(5).max(60),
+  /** Interviewer voice (Deepgram model id) — validated against our curated list. */
+  voice: z.enum(VOICE_IDS).default(DEFAULT_VOICE),
 });
 export type BlueprintConfig = z.infer<typeof blueprintConfigSchema>;
 

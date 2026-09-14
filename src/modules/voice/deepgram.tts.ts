@@ -9,9 +9,19 @@ import {
   type TtsOptions,
   type TtsSession,
 } from '@/modules/voice/types';
+import { findVoice } from '@/modules/voice/voices';
 
-/** Direct socket API — see the note in deepgram.stt.ts about the v5 SDK. */
-const TTS_URL = 'wss://api.deepgram.com/v1/speak';
+/**
+ * Direct socket API — see the note in deepgram.stt.ts about the v5 SDK.
+ *
+ * All our voices are `flux-*` on Deepgram's v2 speak API. Note that v2 signals
+ * end-of-audio with "SpeechMetadata", NOT "Flushed" (which fires early, while
+ * audio is still streaming) — using v1's signal here truncates every question.
+ * v1 `aura-*` models are not supported; they reject flux ids and use the other
+ * end signal, so mixing generations needs a deliberate branch here.
+ */
+const SPEAK_URL = 'wss://api.deepgram.com/v2/speak';
+const DONE_MESSAGE = 'SpeechMetadata';
 
 /** Safety net so a stalled socket can never hang an interview turn. */
 const SPEAK_TIMEOUT_MS = 15_000;
@@ -20,19 +30,23 @@ export const deepgramTts: TextToSpeechProvider = {
   async openSession(sessionOpts: TtsOptions = {}): Promise<TtsSession> {
     if (!env.DEEPGRAM_API_KEY) throw new AppError(503, 'Voice is not configured', 'voice_disabled');
 
+    // Each voice carries its own speed/expressivity — they don't sit right at the same settings.
+    const voice = findVoice(sessionOpts.model ?? env.DEEPGRAM_TTS_MODEL);
+
     const params = new URLSearchParams({
-      model: sessionOpts.model ?? env.DEEPGRAM_TTS_MODEL,
+      model: voice.id,
       encoding: AUDIO_ENCODING,
       sample_rate: String(TTS_SAMPLE_RATE),
+      speed: String(voice.speed),
+      expressivity: String(voice.expressivity),
     });
 
-    const ws = new WebSocket(`${TTS_URL}?${params}`, {
-      headers: { Authorization: `Token ${env.DEEPGRAM_API_KEY}` },
-    });
+    const url = `${SPEAK_URL}?${params}`;
+    const ws = new WebSocket(url, { headers: { Authorization: `Token ${env.DEEPGRAM_API_KEY}` } });
 
     let socketError: Error | null = null;
     ws.on('error', (err: Error) => {
-      logger.error({ err }, 'Deepgram TTS error');
+      logger.error({ err, model: voice.id }, 'Deepgram TTS error');
       socketError = err;
     });
 
@@ -40,6 +54,10 @@ export const deepgramTts: TextToSpeechProvider = {
       ws.once('open', resolve);
       ws.once('error', reject);
     });
+    logger.debug(
+      { model: voice.id, speed: voice.speed, expressivity: voice.expressivity },
+      'TTS session open',
+    );
 
     return {
       /**
@@ -62,9 +80,8 @@ export const deepgramTts: TextToSpeechProvider = {
           if (isBinary) {
             chunks.push(data);
           } else {
-            // "Flushed" = every audio frame for THIS utterance has been sent.
             try {
-              if ((JSON.parse(data.toString()) as { type?: string }).type === 'Flushed') done = true;
+              if ((JSON.parse(data.toString()) as { type?: string }).type === DONE_MESSAGE) done = true;
             } catch {
               /* ignore non-JSON control frames */
             }

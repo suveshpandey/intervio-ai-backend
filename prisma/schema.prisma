@@ -198,6 +198,7 @@ model Blueprint {
   level       String // junior | mid | senior
   difficulty  String // easy | standard | hard
   durationMin Int    @map("duration_min")
+  voice       String @default("flux-priya-en") // Deepgram TTS model id
 
   sections      Json     // ordered [{ key, title, budgetMin }]
   probeClaimIds String[] @map("probe_claim_ids") // ordered claim ids to challenge

@@ -14,6 +14,7 @@ import { resumeRouter } from '@/modules/resume/resume.routes';
 import { jdRouter } from '@/modules/jd/jd.routes';
 import { blueprintRouter } from '@/modules/planner/planner.routes';
 import { interviewRouter } from '@/modules/interview/interview.routes';
+import { voiceRouter } from '@/modules/voice/voice.routes';
 import { attachVoiceGateway } from '@/modules/interview/gateway/ws';
 import { startParseWorker } from '@/jobs/parse.worker';
 
@@ -44,6 +45,7 @@ app.use('/resumes', resumeRouter);
 app.use('/jd', jdRouter);
 app.use('/blueprints', blueprintRouter);
 app.use('/interviews', interviewRouter);
+app.use('/voices', voiceRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

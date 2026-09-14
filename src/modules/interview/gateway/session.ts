@@ -39,6 +39,7 @@ export class VoiceSession {
   /** Blueprint bits needed to report progress; loaded once at start. */
   private sections: PlanSection[] = [];
   private durationMin = 0;
+  private voice: string | undefined;
 
   constructor(
     private readonly ws: WebSocket,
@@ -56,7 +57,7 @@ export class VoiceSession {
     // Prime STT with the candidate's own tech terms so jargon survives transcription.
     const keyterms = await this.loadBlueprint();
 
-    this.tts = await deepgramTts.openSession();
+    this.tts = await deepgramTts.openSession({ model: this.voice });
     this.stt = await deepgramStt.openStream({
       sampleRate: STT_SAMPLE_RATE,
       keyterms,
@@ -223,6 +224,7 @@ export class VoiceSession {
     if (!interview) return [];
     this.sections = (interview.blueprint.sections as unknown as PlanSection[]) ?? [];
     this.durationMin = interview.blueprint.durationMin;
+    this.voice = interview.blueprint.voice;
     const extracted = interview.blueprint.resume.extracted as { skills?: string[] } | null;
     return (extracted?.skills ?? []).slice(0, 50);
   }

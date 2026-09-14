@@ -53,7 +53,7 @@ const schema = z.object({
   // Voice (Deepgram) — STT + TTS for the live interview.
   DEEPGRAM_API_KEY: z.string().optional(),
   DEEPGRAM_STT_MODEL: z.string().default('nova-3'),
-  DEEPGRAM_TTS_MODEL: z.string().default('aura-2-thalia-en'),
+  DEEPGRAM_TTS_MODEL: z.string().default('flux-marcus-en'),
 
   // Public base URL of the frontend — used to build links in emails.
   APP_URL: z.string().url().default('http://localhost:3000'),

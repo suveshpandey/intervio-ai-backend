@@ -10,6 +10,7 @@ interface CreateBlueprint {
   level: string;
   difficulty: string;
   durationMin: number;
+  voice: string;
   sections: PlanSection[];
   probeClaimIds: string[];
 }

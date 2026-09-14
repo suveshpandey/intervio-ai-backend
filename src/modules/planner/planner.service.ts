@@ -87,6 +87,7 @@ export async function buildBlueprint(userId: string, config: BlueprintConfig) {
     level: config.level,
     difficulty: config.difficulty,
     durationMin: config.durationMin,
+    voice: config.voice,
     sections,
     probeClaimIds,
   });
