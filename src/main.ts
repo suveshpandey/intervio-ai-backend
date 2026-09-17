@@ -25,7 +25,20 @@ app.use(helmet());
 app.use(cors({ origin: corsOrigins, credentials: true }));
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
-app.use(pinoHttp({ logger }));
+// One concise line per request. The default dumps every header and cookie, which
+// buries the interview diagnostics we actually need while debugging a live call.
+app.use(
+  pinoHttp({
+    logger,
+    autoLogging: { ignore: (req) => req.url === '/health' },
+    customSuccessMessage: (req, res) => `${req.method} ${req.url} ${res.statusCode}`,
+    customErrorMessage: (req, res, err) => `${req.method} ${req.url} ${res.statusCode} ${err.message}`,
+    serializers: {
+      req: (req) => ({ method: req.method, url: req.url }),
+      res: (res) => ({ status: res.statusCode }),
+    },
+  }),
+);
 
 app.get('/health', async (_req, res) => {
   const [db, cache] = await Promise.allSettled([

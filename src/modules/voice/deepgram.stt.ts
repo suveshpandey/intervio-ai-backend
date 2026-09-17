@@ -18,13 +18,35 @@ const STT_URL = 'wss://api.deepgram.com/v1/listen';
 
 /** Silence after speech before Deepgram emits a final. Lower = snappier turns. */
 const ENDPOINTING_MS = 300;
-/** Backstop: fires UtteranceEnd if endpointing misses a pause this long. */
-const UTTERANCE_END_MS = 1000;
+/**
+ * How long a silence means "they stopped talking".
+ *
+ * 1000ms was too eager in real use — people pause about that long mid-sentence
+ * while thinking ("...and then, for the index, I used..."), and the interviewer
+ * would cut them off. The gateway adds a short grace window on top of this, so
+ * see TURN_GRACE_MS there for the real total.
+ */
+const UTTERANCE_END_MS = 2000;
+
+/**
+ * Deepgram closes a Listen socket that receives no audio for ~10s. Our worklet
+ * deliberately stops sending during long silences to save cost, so without this
+ * the stream dies mid-interview and every later frame vanishes into a closed
+ * socket — audio keeps flowing, no transcript ever comes back, silent hang.
+ */
+const KEEPALIVE_MS = 5000;
 
 interface DeepgramMessage {
   type?: string;
   is_final?: boolean;
   channel?: { alternatives?: { transcript?: string }[] };
+}
+
+/** Diagnostic counters per stream (see the 'STT heartbeat' log). */
+interface SttCounters {
+  results: number;
+  empty: number;
+  speechStarted: number;
 }
 
 export const deepgramStt: SpeechToTextProvider = {
@@ -52,6 +74,10 @@ export const deepgramStt: SpeechToTextProvider = {
       headers: { Authorization: `Token ${env.DEEPGRAM_API_KEY}` },
     });
 
+    // Without these, an "audio in / nothing out" failure is invisible: empty
+    // Results are normal for silence and get filtered, so we log nothing at all.
+    const c: SttCounters = { results: 0, empty: 0, speechStarted: 0 };
+
     ws.on('message', (data: Buffer, isBinary: boolean) => {
       if (isBinary) return;
       let msg: DeepgramMessage;
@@ -60,11 +86,23 @@ export const deepgramStt: SpeechToTextProvider = {
       } catch {
         return;
       }
+
       if (msg.type === 'Results') {
+        c.results++;
         const text = msg.channel?.alternatives?.[0]?.transcript ?? '';
-        if (text.trim()) opts.onTranscript({ text, isFinal: Boolean(msg.is_final) });
+        if (text.trim()) {
+          opts.onTranscript({ text, isFinal: Boolean(msg.is_final) });
+        } else {
+          c.empty++;
+          // Proof of life: Deepgram IS processing our audio, it just hears no speech.
+          if (c.empty % 25 === 0) logger.debug(c, 'STT heartbeat: processing, no speech heard');
+        }
       } else if (msg.type === 'UtteranceEnd') {
         opts.onUtteranceEnd?.();
+      } else if (msg.type === 'SpeechStarted') {
+        c.speechStarted++;
+      } else {
+        logger.debug({ type: msg.type }, 'STT message');
       }
     });
 
@@ -72,7 +110,16 @@ export const deepgramStt: SpeechToTextProvider = {
       logger.error({ err }, 'Deepgram STT error');
       opts.onError?.(err);
     });
-    ws.on('close', () => opts.onClose?.());
+    // Keep the socket alive through silences (see KEEPALIVE_MS).
+    const keepalive = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'KeepAlive' }));
+    }, KEEPALIVE_MS);
+
+    ws.on('close', (code: number, reason: Buffer) => {
+      clearInterval(keepalive);
+      logger.warn({ code, reason: reason.toString().slice(0, 120) }, 'Deepgram STT socket closed');
+      opts.onClose?.();
+    });
 
     await new Promise<void>((resolve, reject) => {
       ws.once('open', resolve);
@@ -91,8 +138,12 @@ export const deepgramStt: SpeechToTextProvider = {
         sendJson({ type: 'Finalize' });
       },
       close() {
+        clearInterval(keepalive);
         sendJson({ type: 'CloseStream' });
         ws.close();
+      },
+      get open() {
+        return ws.readyState === WebSocket.OPEN;
       },
     };
   },

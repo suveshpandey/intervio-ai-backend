@@ -33,6 +33,8 @@ export interface SttStreamOptions extends SttCallbacks {
 }
 
 export interface SttStream {
+  /** False once the provider has closed the socket — the caller must reconnect. */
+  readonly open: boolean;
   /** Push a PCM16 frame. */
   send(chunk: Buffer): void;
   /** Ask for any buffered audio to be transcribed now. */

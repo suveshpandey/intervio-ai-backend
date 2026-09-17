@@ -26,6 +26,13 @@ const DONE_MESSAGE = 'SpeechMetadata';
 /** Safety net so a stalled socket can never hang an interview turn. */
 const SPEAK_TIMEOUT_MS = 15_000;
 
+/**
+ * Deepgram drops an idle Speak socket. A candidate answering for a minute is
+ * completely normal, and that was long enough to lose the connection — after
+ * which every question threw "TTS session is closed" and the interview carried
+ * on in total silence. So the session reconnects on demand instead of failing.
+ */
+
 export const deepgramTts: TextToSpeechProvider = {
   async openSession(sessionOpts: TtsOptions = {}): Promise<TtsSession> {
     if (!env.DEEPGRAM_API_KEY) throw new AppError(503, 'Voice is not configured', 'voice_disabled');
@@ -42,22 +49,33 @@ export const deepgramTts: TextToSpeechProvider = {
     });
 
     const url = `${SPEAK_URL}?${params}`;
-    const ws = new WebSocket(url, { headers: { Authorization: `Token ${env.DEEPGRAM_API_KEY}` } });
-
+    let ws: WebSocket;
     let socketError: Error | null = null;
-    ws.on('error', (err: Error) => {
-      logger.error({ err, model: voice.id }, 'Deepgram TTS error');
-      socketError = err;
-    });
+    let closedDeliberately = false;
 
-    await new Promise<void>((resolve, reject) => {
-      ws.once('open', resolve);
-      ws.once('error', reject);
-    });
-    logger.debug(
-      { model: voice.id, speed: voice.speed, expressivity: voice.expressivity },
-      'TTS session open',
-    );
+    async function connect(reason: 'open' | 'reconnect'): Promise<void> {
+      socketError = null;
+      ws = new WebSocket(url, { headers: { Authorization: `Token ${env.DEEPGRAM_API_KEY}` } });
+      ws.on('error', (err: Error) => {
+        logger.error({ err, model: voice.id }, 'Deepgram TTS error');
+        socketError = err;
+      });
+      ws.on('close', (code: number) => {
+        if (!closedDeliberately) {
+          logger.warn({ code, model: voice.id }, 'Deepgram TTS socket closed (will reconnect)');
+        }
+      });
+      await new Promise<void>((resolve, reject) => {
+        ws.once('open', resolve);
+        ws.once('error', reject);
+      });
+      logger.debug(
+        { model: voice.id, speed: voice.speed, expressivity: voice.expressivity, reason },
+        'TTS session open',
+      );
+    }
+
+    await connect('open');
 
     return {
       /**
@@ -65,7 +83,8 @@ export const deepgramTts: TextToSpeechProvider = {
        * time-to-first-chunk is what makes the interview feel conversational.
        */
       async *speak(text: string, opts: TtsOptions = {}): AsyncIterable<Buffer> {
-        if (ws.readyState !== WebSocket.OPEN) throw new Error('TTS session is closed');
+        // Deepgram drops idle sockets; a long candidate answer is enough to lose it.
+        if (ws.readyState !== WebSocket.OPEN) await connect('reconnect');
 
         const chunks: Buffer[] = [];
         let done = false;
@@ -115,8 +134,15 @@ export const deepgramTts: TextToSpeechProvider = {
           while (true) {
             while (chunks.length) yield chunks.shift()!;
             if (done || opts.signal?.aborted) break;
+            // Re-check *inside* the executor: if a chunk landed between the check
+            // above and registering `wake`, signal() would have found no waiter and
+            // the generator would sleep until the timeout. Classic missed wakeup.
             await new Promise<void>((resolve) => {
               wake = resolve;
+              if (chunks.length || done) {
+                wake = null;
+                resolve();
+              }
             });
           }
           while (chunks.length) yield chunks.shift()!;
@@ -131,6 +157,7 @@ export const deepgramTts: TextToSpeechProvider = {
       },
 
       close() {
+        closedDeliberately = true;
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'Close' }));
         ws.close();
       },

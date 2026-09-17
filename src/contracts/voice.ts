@@ -14,7 +14,9 @@ export type ClientMessage =
   /** Candidate ended the interview early. */
   | { type: 'end' }
   /** DEV ONLY: submit a typed answer instead of speaking (no mic needed). */
-  | { type: 'text_answer'; text: string };
+  | { type: 'text_answer'; text: string }
+  /** What the mic actually produced — a rate mismatch makes STT hear gibberish. */
+  | { type: 'mic_info'; contextSampleRate: number; targetSampleRate: number };
 
 /** Server → browser. */
 export type ServerMessage =
