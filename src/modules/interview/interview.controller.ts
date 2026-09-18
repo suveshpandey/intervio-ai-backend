@@ -2,6 +2,9 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { param } from '@/common/http';
 import { issueTicket } from '@/modules/interview/gateway/ticket';
+import { interviewRepository } from '@/modules/interview/interview.repository';
+import { stateStore } from '@/modules/interview/state.store';
+import { logger } from '@/common/logger';
 import {
   startInterview,
   submitAnswer,
@@ -48,6 +51,24 @@ export const interviewController = {
     const { interview } = await getTranscript(req.userId!, interviewId); // 404s if not theirs
     const ticket = await issueTicket({ userId: req.userId!, interviewId: interview.id });
     res.json({ ticket, expiresInSeconds: 60 });
+  },
+
+  /**
+   * Stop an interview part-way through.
+   *
+   * Deliberately an HTTP route, not only the WebSocket 'end' message: this has to
+   * work when the socket is already gone, which is precisely when an interview
+   * would otherwise stay stuck on `live` forever.
+   */
+  async end(req: Request, res: Response) {
+    const interviewId = param(req, 'id');
+    const { interview } = await getTranscript(req.userId!, interviewId); // 404s if not theirs
+
+    const ended = await interviewRepository.abandon(interview.id);
+    await stateStore.clear(interview.id);
+    if (ended) logger.info({ interviewId: interview.id }, 'interview ended early by candidate');
+
+    res.json({ status: ended ? 'abandoned' : interview.status });
   },
 
   async detail(req: Request, res: Response) {

@@ -5,6 +5,7 @@ import { deepgramStt } from '@/modules/voice/deepgram.stt';
 import { deepgramTts } from '@/modules/voice/deepgram.tts';
 import { STT_SAMPLE_RATE, type SttStream, type TtsSession } from '@/modules/voice/types';
 import { stateStore } from '@/modules/interview/state.store';
+import { interviewRepository } from '@/modules/interview/interview.repository';
 import { submitAnswer, ESTIMATED_TURN_SECONDS } from '@/modules/interview/engine/orchestrator';
 import { prisma } from '@/db/prisma';
 import type { PlanSection } from '@/modules/planner/schema';
@@ -199,7 +200,10 @@ export class VoiceSession {
         this.muted = false;
         break;
       case 'end':
-        this.close();
+        // Candidate pressed "End interview". Mark it ended, then hang up.
+        // NOTE: only the explicit message does this — a plain socket close (wifi
+        // blip, closed tab) must leave the row `live` so a refresh can resume it.
+        void this.endEarly();
         break;
       case 'mic_info':
         this.log.info(
@@ -359,6 +363,19 @@ export class VoiceSession {
     this.voice = interview.blueprint.voice;
     const extracted = interview.blueprint.resume.extracted as { skills?: string[] } | null;
     return (extracted?.skills ?? []).slice(0, 50);
+  }
+
+  /** Stop the interview part-way through at the candidate's request. */
+  private async endEarly(): Promise<void> {
+    try {
+      const ended = await interviewRepository.abandon(this.ticket.interviewId);
+      await stateStore.clear(this.ticket.interviewId);
+      if (ended) this.log.info('interview ended early by candidate');
+    } catch (err) {
+      this.log.error({ err }, 'failed to mark interview ended');
+    } finally {
+      this.close();
+    }
   }
 
   close(): void {

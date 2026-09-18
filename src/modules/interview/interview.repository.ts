@@ -56,6 +56,21 @@ export const interviewRepository = {
     await prisma.evidence.create({ data });
   },
 
+  /**
+   * Ended early by the candidate (or the tab closed).
+   *
+   * Scoped to `status: 'live'` on purpose: a socket closing right after a normal
+   * finish must NOT downgrade a 'completed' interview to 'abandoned'.
+   * @returns true if this call is what ended it.
+   */
+  async abandon(id: string): Promise<boolean> {
+    const { count } = await prisma.interview.updateMany({
+      where: { id, status: 'live' },
+      data: { status: 'abandoned', endedAt: new Date() },
+    });
+    return count > 0;
+  },
+
   async complete(id: string): Promise<void> {
     await prisma.interview.update({
       where: { id },
