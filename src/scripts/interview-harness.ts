@@ -52,7 +52,7 @@ function printDebug(r: TurnResult) {
   );
   console.log(`   ├─ model    suggested ${e.actionSuggested} — ${e.reason}`);
   console.log(
-    `   └─ ENGINE   ${d.action}${d.overrode ? '  ⚠️  OVERRODE MODEL' : ''} · difficulty ${d.difficulty}\n              ${d.rationale}`,
+    `   └─ ENGINE   ${d.action}${d.overrode ? '  ⚠️  OVERRODE MODEL' : ''}${d.prefetched ? '  ⚡ PREFETCHED' : ''} · difficulty ${d.difficulty}\n              ${d.rationale}`,
   );
 }
 

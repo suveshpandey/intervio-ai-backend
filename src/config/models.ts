@@ -28,5 +28,29 @@ export const TASK_REASONING: Partial<Record<LlmTask, 'none' | 'low' | 'medium' |
   question: 'none',
 };
 
-/** Used when the primary model errors. Cheap + reliable. */
-export const FALLBACK_MODEL = 'deepseek-ai/DeepSeek-V4-Flash';
+/**
+ * Used when the primary model errors or times out.
+ * DeepSeek is reliable but ~13s per call through euri — fine for one-off work,
+ * a dead-air freeze mid-interview. Live tasks fall back to a second Gemini
+ * (~2.5s, honours reasoning none) instead.
+ */
+const DEFAULT_FALLBACK = 'deepseek-ai/DeepSeek-V4-Flash';
+const LIVE_FALLBACK = 'gemini-3.1-flash-lite';
+
+export const FALLBACK_POLICY: Record<LlmTask, string> = {
+  extract: DEFAULT_FALLBACK,
+  plan: DEFAULT_FALLBACK,
+  evaluate: LIVE_FALLBACK,
+  question: LIVE_FALLBACK,
+  report: DEFAULT_FALLBACK,
+};
+
+/**
+ * Per-task ceiling before giving up on the primary. Live calls take ~2-3s, so a
+ * call still running at 8s is stalled — cut over to the fallback rather than
+ * leave the candidate in silence for the default 20s.
+ */
+export const TASK_TIMEOUT_MS: Partial<Record<LlmTask, number>> = {
+  evaluate: 8_000,
+  question: 8_000,
+};

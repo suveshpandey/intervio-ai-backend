@@ -10,6 +10,8 @@ const questionSchema = z.object({ question: z.string().default('') });
 const MAX_TOKENS = 200;
 
 const FALLBACK = 'Could you walk me through that in a bit more detail?';
+/** The canned question used when generation fails — never worth prefetching. */
+export const FALLBACK_QUESTION = FALLBACK;
 
 /** Question for an action the ENGINE chose (only when it overrode the model). */
 export async function generateQuestion(

@@ -7,6 +7,7 @@ import { STT_SAMPLE_RATE, type SttStream, type TtsSession } from '@/modules/voic
 import { stateStore } from '@/modules/interview/state.store';
 import { interviewRepository } from '@/modules/interview/interview.repository';
 import { submitAnswer } from '@/modules/interview/engine/orchestrator';
+import { clearPrefetch } from '@/modules/interview/engine/prefetch';
 import { prisma } from '@/db/prisma';
 import type { PlanSection } from '@/modules/planner/schema';
 import type { InterviewState } from '@/modules/interview/types';
@@ -282,6 +283,8 @@ export class VoiceSession {
       this.log.info(
         {
           engineMs: tEngine,
+          // true = the next-topic question was written while they were answering.
+          prefetched: result.debug?.prefetched ?? false,
           ttsFirstByteMs: firstByteMs,
           ttsTotalMs: Date.now() - tSpeakStart,
           totalMs: Date.now() - tStart,
@@ -403,6 +406,7 @@ export class VoiceSession {
     try {
       const ended = await interviewRepository.abandon(this.ticket.interviewId);
       await stateStore.clear(this.ticket.interviewId);
+      clearPrefetch(this.ticket.interviewId);
       if (ended) this.log.info('interview ended early by candidate');
     } catch (err) {
       this.log.error({ err }, 'failed to mark interview ended');

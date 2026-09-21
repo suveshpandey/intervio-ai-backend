@@ -4,6 +4,7 @@ import { param } from '@/common/http';
 import { issueTicket } from '@/modules/interview/gateway/ticket';
 import { interviewRepository } from '@/modules/interview/interview.repository';
 import { stateStore } from '@/modules/interview/state.store';
+import { clearPrefetch } from '@/modules/interview/engine/prefetch';
 import { logger } from '@/common/logger';
 import {
   startInterview,
@@ -66,6 +67,7 @@ export const interviewController = {
 
     const ended = await interviewRepository.abandon(interview.id);
     await stateStore.clear(interview.id);
+    clearPrefetch(interview.id);
     if (ended) logger.info({ interviewId: interview.id }, 'interview ended early by candidate');
 
     res.json({ status: ended ? 'abandoned' : interview.status });

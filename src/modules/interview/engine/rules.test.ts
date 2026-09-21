@@ -4,6 +4,7 @@ import {
   isRepeat,
   isWeak,
   pickNextClaim,
+  predictMoveOn,
   stepDifficulty,
   verdictFor,
   MAX_FOLLOW_UPS,
@@ -197,5 +198,43 @@ describe('helpers', () => {
       },
     });
     expect(pickNextClaim(state, CLAIMS)).toBeNull();
+  });
+});
+
+describe('predictMoveOn (prefetch target)', () => {
+  const predict = (state: InterviewState) => predictMoveOn(state, CLAIMS, SECTIONS);
+  const same = (a: ReturnType<typeof run>, b: ReturnType<typeof run>) =>
+    [a.claimId, a.objective, a.gotoSectionIdx, a.finished].join('|') ===
+    [b.claimId, b.objective, b.gotoSectionIdx, b.finished].join('|');
+
+  it('predicts the next claim exactly as the real MOVE_ON decides it', () => {
+    const state = makeState();
+    expect(same(predict(state), run(state, makeEval({ actionSuggested: 'MOVE_ON' })))).toBe(true);
+    expect(predict(state).claimId).toBe('c2');
+  });
+
+  it('matches the "they don\'t know it" move-on too', () => {
+    const state = makeState();
+    expect(same(predict(state), run(state, makeEval({ issue: 'no_answer' })))).toBe(true);
+  });
+
+  it('predicts a section advance once the claims are exhausted', () => {
+    const state = makeState({
+      currentClaimId: 'c2',
+      claims: {
+        c1: { status: 'verified', confidence: 0.8, openGaps: [], turnsSpent: 2 },
+        c2: { status: 'probing', confidence: 0.3, openGaps: [], turnsSpent: 1 },
+      },
+    });
+    const p = predict(state);
+    expect(p.gotoSectionIdx).toBe(2);
+    expect(same(p, run(state, makeEval({ actionSuggested: 'MOVE_ON' })))).toBe(true);
+  });
+
+  it('does not touch the state it predicts from', () => {
+    const state = makeState();
+    const before = JSON.stringify(state);
+    predict(state);
+    expect(JSON.stringify(state)).toBe(before);
   });
 });

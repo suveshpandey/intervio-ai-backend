@@ -1,27 +1,35 @@
 import type { z } from 'zod';
-import { MODEL_POLICY, FALLBACK_MODEL, TASK_REASONING, type LlmTask } from '@/config/models';
+import {
+  MODEL_POLICY,
+  FALLBACK_POLICY,
+  TASK_REASONING,
+  TASK_TIMEOUT_MS,
+  type LlmTask,
+} from '@/config/models';
 import { callEuri, type ChatMessage, type ChatOptions, type ChatResult } from '@/llm/client';
 import { tryParse } from '@/llm/json';
 import { AppError } from '@/common/errors';
 import { logger } from '@/common/logger';
 
-/** Route a task to its policy model; fall back to DeepSeek if the primary errors. */
+/** Route a task to its policy model; fall back to the task's fallback if the primary errors. */
 export async function chat(
   task: LlmTask,
   messages: ChatMessage[],
   opts: ChatOptions = {},
 ): Promise<ChatResult> {
   const primary = MODEL_POLICY[task];
-  // Task policy sets the thinking budget unless the caller overrides it.
-  const withReasoning: ChatOptions = {
+  const fallback = FALLBACK_POLICY[task];
+  // Task policy sets the thinking budget and time limit unless the caller overrides them.
+  const withPolicy: ChatOptions = {
     ...opts,
     reasoningEffort: opts.reasoningEffort ?? TASK_REASONING[task],
+    timeoutMs: opts.timeoutMs ?? TASK_TIMEOUT_MS[task],
   };
   try {
-    return await callEuri(primary, messages, withReasoning);
+    return await callEuri(primary, messages, withPolicy);
   } catch (err) {
-    logger.warn({ err, task, primary }, 'LLM primary failed — falling back');
-    return callEuri(FALLBACK_MODEL, messages, withReasoning);
+    logger.warn({ err, task, primary, fallback }, 'LLM primary failed — falling back');
+    return callEuri(fallback, messages, withPolicy);
   }
 }
 

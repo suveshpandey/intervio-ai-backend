@@ -7,8 +7,13 @@ import { stateStore } from '@/modules/interview/state.store';
 import { interviewRepository } from '@/modules/interview/interview.repository';
 import { buildCompactState } from '@/modules/interview/context/compact-state';
 import { evaluateAnswer } from '@/modules/interview/evaluation/evaluate';
-import { generateQuestion, generateOpeningQuestion } from '@/modules/interview/question/generate';
-import { decide, isRepeat, isWeak, verdictFor } from '@/modules/interview/engine/rules';
+import {
+  generateQuestion,
+  generateOpeningQuestion,
+  FALLBACK_QUESTION,
+} from '@/modules/interview/question/generate';
+import { decide, isRepeat, isWeak, predictMoveOn, verdictFor } from '@/modules/interview/engine/rules';
+import { storePrefetch, takePrefetch, clearPrefetch } from '@/modules/interview/engine/prefetch';
 import type {
   Decision,
   Difficulty,
@@ -48,6 +53,8 @@ export interface TurnResult {
     rationale: string;
     evaluation: EvalResult;
     difficulty: Difficulty;
+    /** The question was prepared during the answer (no second LLM call). */
+    prefetched: boolean;
   };
 }
 
@@ -93,6 +100,7 @@ export async function startInterview(userId: string, blueprintId: string): Promi
   const question = await generateOpeningQuestion(compact, sections[0]!.key);
   await issueQuestion(state, sections, question);
   await stateStore.save(state);
+  prefetchMoveOn(state, blueprint, sections);
 
   return {
     interviewId: interview.id,
@@ -127,6 +135,7 @@ export async function submitAnswer(
   const probedClaimId = state.currentClaimId;
   const answeredTurnId = state.pendingTurnId;
   const askedQuestion = state.pendingQuestion;
+  const answeredTurnIdx = state.turnIdx;
 
   // 1. Judge the answer (merged call also proposes the next question).
   const compact = await contextFor(state, blueprint, sections);
@@ -175,6 +184,7 @@ export async function submitAnswer(
 
   // 7. Finished?
   if (decision.finished) {
+    clearPrefetch(interviewId);
     state.phase = 'done';
     await stateStore.save(state);
     await interviewRepository.complete(interviewId);
@@ -184,14 +194,19 @@ export async function submitAnswer(
       question: null,
       done: true,
       sectionKey: sections[state.sectionIdx]?.key ?? 'wrap',
-      debug: debugOf(decision, evaluation, state),
+      debug: debugOf(decision, evaluation, state, false),
     };
   }
 
-  // 8. Next question — free from the merged call when the engine agreed.
-  const question = await nextQuestion(state, blueprint, sections, decision, evaluation, movedSection);
+  // 8. Next question. A MOVE_ON we predicted was written while they talked;
+  //    otherwise it's free from the merged call, or one more call on an override.
+  const prefetched = await usablePrefetch(interviewId, answeredTurnIdx, decision, state);
+  const question = prefetched
+    ? bridged(prefetched, evaluation, state.turnIdx)
+    : await nextQuestion(state, blueprint, sections, decision, evaluation, movedSection);
   await issueQuestion(state, sections, question);
   await stateStore.save(state);
+  prefetchMoveOn(state, blueprint, sections);
 
   return {
     interviewId,
@@ -199,7 +214,7 @@ export async function submitAnswer(
     question,
     done: false,
     sectionKey: sections[state.sectionIdx]?.key ?? 'unknown',
-    debug: debugOf(decision, evaluation, state),
+    debug: debugOf(decision, evaluation, state, Boolean(prefetched)),
   };
 }
 
@@ -217,13 +232,14 @@ function sectionsOf(blueprint: Blueprint): PlanSection[] {
   return (blueprint.sections as unknown as PlanSection[]) ?? [];
 }
 
-function debugOf(decision: Decision, evaluation: EvalResult, state: InterviewState) {
+function debugOf(decision: Decision, evaluation: EvalResult, state: InterviewState, prefetched: boolean) {
   return {
     action: decision.action,
     overrode: decision.overrode,
     rationale: decision.rationale,
     evaluation,
     difficulty: state.difficulty,
+    prefetched,
   };
 }
 
@@ -382,6 +398,72 @@ async function nextQuestion(
     );
   }
   return question;
+}
+
+/* ─────────────── topic-change prefetch (see engine/prefetch.ts) ─────────────── */
+
+/**
+ * Start writing the question a MOVE_ON would lead to, in the background, while
+ * the candidate answers the question just issued. Fire-and-forget: never throws,
+ * never delays the current turn.
+ */
+function prefetchMoveOn(state: InterviewState, blueprint: Blueprint, sections: PlanSection[]): void {
+  const move = predictMoveOn(state, blueprint.probeClaimIds, sections);
+  if (move.finished) return;
+
+  // The state as it will be after that move — computed by the same applyDecision.
+  const future = structuredClone(state);
+  applyDecision(future, move);
+  // It can't know the answer being given right now. Leaving the old exchange in
+  // would make it reply to the PREVIOUS answer, so it gets none.
+  future.lastTurns = [];
+
+  const question = (async () => {
+    const compact = await contextFor(future, blueprint, sections);
+    const q =
+      move.gotoSectionIdx !== undefined
+        ? await generateOpeningQuestion(compact, sections[move.gotoSectionIdx]?.key ?? 'claim_verification')
+        : await generateQuestion(
+            compact,
+            'MOVE_ON',
+            `${move.objective}. This is a fresh topic: open it directly — no thanks or acknowledgement, and don't refer to earlier answers.`,
+          );
+    return q === FALLBACK_QUESTION ? null : q;
+  })().catch((err: unknown) => {
+    logger.warn({ err, interviewId: state.interviewId }, 'question prefetch failed');
+    return null;
+  });
+
+  storePrefetch(state.interviewId, state.turnIdx, move, question);
+}
+
+async function usablePrefetch(
+  interviewId: string,
+  answeredTurnIdx: number,
+  decision: Decision,
+  state: InterviewState,
+): Promise<string | null> {
+  if (decision.action !== 'MOVE_ON') {
+    clearPrefetch(interviewId);
+    return null;
+  }
+  const q = await takePrefetch(interviewId, answeredTurnIdx, decision);
+  if (!q || isRepeat(q, state.askedQuestions)) {
+    logger.debug({ interviewId, reason: q ? 'repeat' : 'no match' }, 'prefetch miss');
+    return null;
+  }
+  return q;
+}
+
+const BRIDGES = ['Got it.', 'Okay, thanks.', 'Alright.'];
+
+/**
+ * A prefetched question was written before the answer existed, so it can't react
+ * to it. A short spoken bridge keeps the hand-off human instead of abrupt.
+ */
+function bridged(question: string, evaluation: EvalResult, turnIdx: number): string {
+  const lead = evaluation.issue === 'no_answer' ? 'No worries.' : BRIDGES[turnIdx % BRIDGES.length]!;
+  return `${lead} ${question}`;
 }
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));

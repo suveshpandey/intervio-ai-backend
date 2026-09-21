@@ -178,6 +178,19 @@ export function decide(input: DecideInput): Decision {
   };
 }
 
+/**
+ * Where a MOVE_ON would lead from this state, without deciding anything.
+ * Used to prefetch the next topic's question while the candidate is answering;
+ * it IS moveOn(), so the prediction can't drift from the real decision.
+ */
+export function predictMoveOn(
+  state: InterviewState,
+  probeClaimIds: string[],
+  sections: PlanSection[],
+): Decision {
+  return moveOn(state, probeClaimIds, sections, 'Prefetch prediction');
+}
+
 /** Move to the next claim, or advance the section when this one is exhausted. */
 function moveOn(
   state: InterviewState,

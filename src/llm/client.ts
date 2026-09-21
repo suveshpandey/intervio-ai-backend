@@ -14,6 +14,8 @@ export interface ChatOptions {
   /** Model "thinking" budget. 'none' cuts latency ~5x — use it for live-interview turns. */
   reasoningEffort?: 'none' | 'low' | 'medium' | 'high';
   signal?: AbortSignal;
+  /** Overrides the default request ceiling (REQUEST_TIMEOUT_MS). */
+  timeoutMs?: number;
 }
 
 export interface ChatResult {
@@ -41,7 +43,8 @@ export async function callEuri(
   if (!env.EURI_API_KEY) throw new AppError(503, 'LLM is not configured', 'llm_disabled');
 
   // Combine the caller's signal (if any) with our timeout.
-  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const timeout = AbortSignal.timeout(timeoutMs);
   const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
 
   let res: Response;
@@ -64,7 +67,7 @@ export async function callEuri(
     });
   } catch (err) {
     if ((err as Error)?.name === 'TimeoutError') {
-      throw new AppError(504, `LLM call timed out after ${REQUEST_TIMEOUT_MS}ms`, 'llm_timeout');
+      throw new AppError(504, `LLM call timed out after ${timeoutMs}ms`, 'llm_timeout');
     }
     throw err;
   }
