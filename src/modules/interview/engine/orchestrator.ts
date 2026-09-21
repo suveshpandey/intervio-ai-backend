@@ -39,6 +39,15 @@ const MAX_SUMMARY = 6;
 const MAX_LAST_TURNS = 2;
 const MAX_OPEN_GAPS = 3;
 
+export interface TurnHooks {
+  /**
+   * Called the moment the next question text exists — the voice layer plays its
+   * lead-in sound here. Returns true if it did; the spoken "Got it." bridge is
+   * then dropped (it would say it twice).
+   */
+  onQuestionReady?: (question: string) => boolean;
+}
+
 export interface TurnResult {
   interviewId: string;
   turnIdx: number;
@@ -116,6 +125,7 @@ export async function submitAnswer(
   interviewId: string,
   answer: string,
   turnSeconds: number = ESTIMATED_TURN_SECONDS,
+  hooks: TurnHooks = {},
 ): Promise<TurnResult> {
   const interview = await interviewRepository.findById(interviewId, userId);
   if (!interview) throw notFound('Interview not found');
@@ -201,17 +211,17 @@ export async function submitAnswer(
   // 8. Next question. A MOVE_ON we predicted was written while they talked;
   //    otherwise it's free from the merged call, or one more call on an override.
   const prefetched = await usablePrefetch(interviewId, answeredTurnIdx, decision, state);
-  const question = prefetched
-    ? bridged(prefetched, evaluation, state.turnIdx)
-    : await nextQuestion(state, blueprint, sections, decision, evaluation, movedSection);
-  await issueQuestion(state, sections, question);
+  const question = prefetched ?? (await nextQuestion(state, blueprint, sections, decision, evaluation, movedSection));
+  const fillerPlayed = hooks.onQuestionReady?.(question) ?? false;
+  const spoken = prefetched && !fillerPlayed ? bridged(prefetched, evaluation, state.turnIdx) : question;
+  await issueQuestion(state, sections, spoken);
   await stateStore.save(state);
   prefetchMoveOn(state, blueprint, sections);
 
   return {
     interviewId,
     turnIdx: state.turnIdx,
-    question,
+    question: spoken,
     done: false,
     sectionKey: sections[state.sectionIdx]?.key ?? 'unknown',
     debug: debugOf(decision, evaluation, state, Boolean(prefetched)),

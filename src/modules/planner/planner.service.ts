@@ -63,8 +63,9 @@ export async function buildBlueprint(userId: string, config: BlueprintConfig) {
   // rather than us truncating its ranked list afterwards.
   const targetClaims = claimCapacity(config.durationMin * SECTION_WEIGHTS.claim_verification);
 
-  // gemini-2.5-flash spends hidden "thinking" tokens before the JSON, and that scales
+  // The plan model spends hidden "thinking" tokens before the JSON, and that scales
   // with prompt size — budget high up front so we don't waste a truncated first call.
+  // It takes ~17-20s; its time limit is raised accordingly (TASK_TIMEOUT_MS).
   const { data: plan } = await completeJson(
     'plan',
     planLlmSchema,

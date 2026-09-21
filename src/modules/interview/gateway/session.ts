@@ -8,6 +8,7 @@ import { stateStore } from '@/modules/interview/state.store';
 import { interviewRepository } from '@/modules/interview/interview.repository';
 import { submitAnswer } from '@/modules/interview/engine/orchestrator';
 import { clearPrefetch } from '@/modules/interview/engine/prefetch';
+import { warmFillers, pickFiller } from '@/modules/voice/fillers';
 import { prisma } from '@/db/prisma';
 import type { PlanSection } from '@/modules/planner/schema';
 import type { InterviewState } from '@/modules/interview/types';
@@ -22,6 +23,14 @@ function peakAmplitude(frame: Buffer): number {
   }
   return peak;
 }
+
+/**
+ * Share of turns that get a lead-in sound before the question. Not every turn:
+ * an "Okay, got it." before every single question becomes a tic.
+ */
+const FILLER_CHANCE = 0.75;
+/** ~200ms of 24kHz PCM16 per frame. */
+const AUDIO_CHUNK_BYTES = 9600;
 
 /**
  * Turn end is decided by Deepgram's `utterance_end_ms` alone (see deepgram.stt.ts).
@@ -68,6 +77,8 @@ export class VoiceSession {
   private windowPeak = 0;
   private keyterms: string[] = [];
   private reconnecting = false;
+  /** Last thinking sound, so the same one never plays twice in a row. */
+  private lastFiller: string | null = null;
 
   /** Blueprint bits needed to report progress; loaded once at start. */
   private sections: PlanSection[] = [];
@@ -94,6 +105,8 @@ export class VoiceSession {
 
     // Prime STT with the candidate's own tech terms so jargon survives transcription.
     const keyterms = await this.loadBlueprint();
+    // Background: first interview with a voice pays ~10s once; later ones are instant.
+    warmFillers(this.voice);
 
     this.tts = await deepgramTts.openSession({ model: this.voice });
     this.keyterms = keyterms;
@@ -260,7 +273,21 @@ export class VoiceSession {
       // the one on screen are the same clock.
       const turnSeconds = this.takeClockSeconds();
 
-      const result = await submitAnswer(this.ticket.userId, this.ticket.interviewId, answer, turnSeconds);
+      // Lead-in sound, the instant the question exists: it plays from memory while
+      // the question's own audio is still being synthesised, so the two join up.
+      let fillerPlayed = false;
+      const result = await submitAnswer(this.ticket.userId, this.ticket.interviewId, answer, turnSeconds, {
+        onQuestionReady: (question) => {
+          if (this.closed || Math.random() >= FILLER_CHANCE) return false;
+          const filler = pickFiller(this.voice, answer, question, this.lastFiller);
+          if (!filler) return false;
+          this.sendAudio(filler.pcm);
+          this.lastFiller = filler.text;
+          fillerPlayed = true;
+          this.log.debug({ filler: filler.text }, 'filler played');
+          return true;
+        },
+      });
 
       const tEngine = Date.now() - tStart;
 
@@ -285,6 +312,7 @@ export class VoiceSession {
           engineMs: tEngine,
           // true = the next-topic question was written while they were answering.
           prefetched: result.debug?.prefetched ?? false,
+          filler: fillerPlayed,
           ttsFirstByteMs: firstByteMs,
           ttsTotalMs: Date.now() - tSpeakStart,
           totalMs: Date.now() - tStart,
@@ -377,6 +405,14 @@ export class VoiceSession {
     state.totalElapsedSec += secs;
     state.sectionElapsedSec += secs;
     await stateStore.save(state);
+  }
+
+  /** Raw PCM to the browser in frame-sized pieces (sent synchronously, so ordering is guaranteed). */
+  private sendAudio(pcm: Buffer): void {
+    if (this.ws.readyState !== this.ws.OPEN) return;
+    for (let i = 0; i < pcm.length; i += AUDIO_CHUNK_BYTES) {
+      this.ws.send(pcm.subarray(i, i + AUDIO_CHUNK_BYTES), { binary: true });
+    }
   }
 
   private send(msg: ServerMessage): void {

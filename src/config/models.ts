@@ -4,10 +4,10 @@
 // family 404s since Sept 2026 while still listed) — verify with a real call.
 export const MODEL_POLICY = {
   extract: 'gemini-3.5-flash-lite', // resume/JD parse + claim extraction (cheap)
-  plan: 'gemini-3.5-flash', // interview blueprint (one-time, depth matters)
+  plan: 'gemini-3.1-pro', // interview blueprint (one-time, depth matters — keep a capable model)
   evaluate: 'gemini-3.5-flash-lite', // live answer evaluation (latency-critical)
   question: 'gemini-3.5-flash-lite', // live question generation (latency-critical)
-  report: 'gemini-3.1-pro', // final report narrative (strong)
+  report: 'gemini-3.1-pro', // final report narrative (strong — keep a capable model)
 } as const;
 
 export type LlmTask = keyof typeof MODEL_POLICY;
@@ -21,7 +21,7 @@ export type LlmTask = keyof typeof MODEL_POLICY;
  *   flash-lite + reasoning none .. ~1.2s  ← same JSON quality
  * The live interview loop must stay ~1s, so evaluate/question disable thinking.
  * (3.5-flash-lite honours `none`, ~2.2s via euri; 3.5-flash / 3.1-pro keep
- * thinking regardless, so only use them where latency doesn't matter.)
+ * thinking regardless, so only use them off the live path.)
  */
 export const TASK_REASONING: Partial<Record<LlmTask, 'none' | 'low' | 'medium' | 'high'>> = {
   evaluate: 'none',
@@ -46,11 +46,21 @@ export const FALLBACK_POLICY: Record<LlmTask, string> = {
 };
 
 /**
- * Per-task ceiling before giving up on the primary. Live calls take ~2-3s, so a
- * call still running at 8s is stalled — cut over to the fallback rather than
- * leave the candidate in silence for the default 20s.
+ * Per-task ceiling before giving up on the primary (default 20s in llm/client.ts).
+ *
+ * Live calls take ~2-3s, so one still running at 8s is stalled — cut over to the
+ * fallback rather than leave the candidate in silence.
+ *
+ * Plan and report are one-off, off the live path, and deliberately use capable
+ * models that always think first (user's call: quality over speed there).
+ * Measured on a real resume (15 claims): 3.1-pro plans in a steady 16-21s;
+ * 3.5-flash swung 17s → 55s+ with euri's load (it's why plan moved to pro, and
+ * why the old 20s limit kept timing out). euri itself gives up at ~60s (504),
+ * so a limit past that would never be reached.
  */
 export const TASK_TIMEOUT_MS: Partial<Record<LlmTask, number>> = {
   evaluate: 8_000,
   question: 8_000,
+  plan: 55_000,
+  report: 55_000,
 };
