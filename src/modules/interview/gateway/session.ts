@@ -6,7 +6,7 @@ import { deepgramTts } from '@/modules/voice/deepgram.tts';
 import { STT_SAMPLE_RATE, type SttStream, type TtsSession } from '@/modules/voice/types';
 import { stateStore } from '@/modules/interview/state.store';
 import { interviewRepository } from '@/modules/interview/interview.repository';
-import { submitAnswer, ESTIMATED_TURN_SECONDS } from '@/modules/interview/engine/orchestrator';
+import { submitAnswer } from '@/modules/interview/engine/orchestrator';
 import { prisma } from '@/db/prisma';
 import type { PlanSection } from '@/modules/planner/schema';
 import type { InterviewState } from '@/modules/interview/types';
@@ -21,9 +21,6 @@ function peakAmplitude(frame: Buffer): number {
   }
   return peak;
 }
-
-const MIN_TURN_SECONDS = 5;
-const MAX_TURN_SECONDS = 300;
 
 /**
  * Turn end is decided by Deepgram's `utterance_end_ms` alone (see deepgram.stt.ts).
@@ -54,10 +51,20 @@ export class VoiceSession {
   private muted = false;
   private busy = false;
   private closed = false;
-  /** When the current question finished playing — used for a real turn duration. */
+  /** Interview is over (finished or ended early) — nothing left to bank. */
+  private ended = false;
+  /** When the current question finished playing — diagnostics only. */
   private listeningSince = Date.now();
+  /**
+   * The interview clock is real, connected time. `state.totalElapsedSec` is
+   * accurate up to this instant; everything since is still running on the clock.
+   * It only stops when the socket closes (see close()).
+   */
+  private clockMark = Date.now();
   private micFrames = 0;
   private droppedFrames = 0;
+  /** Loudest sample since the last heartbeat log (a single frame is just a pause-or-word sample). */
+  private windowPeak = 0;
   private keyterms: string[] = [];
   private reconnecting = false;
 
@@ -95,6 +102,8 @@ export class VoiceSession {
       { voice: this.voice, keyterms: keyterms.length, pending: Boolean(state.pendingQuestion) },
       'voice session started',
     );
+    // (Re)joining starts the clock from wherever the saved state left it.
+    this.clockMark = Date.now();
     this.sendState(state);
 
     // Speak whatever question is already pending (the interview was started over HTTP).
@@ -166,6 +175,7 @@ export class VoiceSession {
         return;
       }
       this.micFrames++;
+      this.windowPeak = Math.max(this.windowPeak, peakAmplitude(data));
       // Periodic heartbeat: proves audio is still reaching STT during a silent hang.
       if (this.micFrames % 50 === 0) {
         this.log.debug(
@@ -174,12 +184,13 @@ export class VoiceSession {
             dropped: this.droppedFrames,
             parts: this.answerParts.length,
             bytes: data.length,
-            // 0-32767. Near zero means the worklet is shipping silence, so the
-            // problem would be upstream of Deepgram entirely.
-            peak: peakAmplitude(data),
+            // 0-32767, loudest over the last ~5s. Normal speech lands ~5000+;
+            // if this stays low while talking, the mic itself is too quiet.
+            peak: this.windowPeak,
           },
           'mic audio flowing',
         );
+        this.windowPeak = 0;
       }
       this.stt?.send(data);
       return;
@@ -243,22 +254,18 @@ export class VoiceSession {
       this.send({ type: 'thinking' });
       const tStart = Date.now();
 
-      const turnSeconds = Math.min(
-        MAX_TURN_SECONDS,
-        Math.max(MIN_TURN_SECONDS, Math.round((Date.now() - this.listeningSince) / 1000)),
-      );
+      // Charge the clock with ALL real time since the last mark — question audio,
+      // the answer, and the previous turn's thinking — so the engine's clock and
+      // the one on screen are the same clock.
+      const turnSeconds = this.takeClockSeconds();
 
-      const result = await submitAnswer(
-        this.ticket.userId,
-        this.ticket.interviewId,
-        answer,
-        turnSeconds || ESTIMATED_TURN_SECONDS,
-      );
+      const result = await submitAnswer(this.ticket.userId, this.ticket.interviewId, answer, turnSeconds);
 
       const tEngine = Date.now() - tStart;
 
       if (result.done || !result.question) {
         this.send({ type: 'done' });
+        this.ended = true;
         this.close();
         return;
       }
@@ -335,13 +342,38 @@ export class VoiceSession {
     return this.sections[state.sectionIdx]?.key ?? 'unknown';
   }
 
+  /** Whole seconds elapsed since the mark; advances the mark by exactly that (no drift). */
+  private takeClockSeconds(): number {
+    const secs = Math.max(0, Math.floor((Date.now() - this.clockMark) / 1000));
+    this.clockMark += secs * 1000;
+    return secs;
+  }
+
+  /** Includes the still-running time since the mark, so the browser gets the live value. */
   private sendState(state: InterviewState): void {
+    const running = (Date.now() - this.clockMark) / 1000;
     this.send({
       type: 'state',
       sectionKey: this.sectionKey(state),
       turnIdx: state.turnIdx,
-      secondsLeft: Math.max(0, this.durationMin * 60 - state.totalElapsedSec),
+      secondsLeft: Math.max(0, Math.round(this.durationMin * 60 - state.totalElapsedSec - running)),
     });
+  }
+
+  /**
+   * Socket dropped mid-interview: bank the time since the last mark so the clock
+   * pauses here and resumes on rejoin. Skipped while a turn is in flight — that
+   * turn saves state itself, and writing now would race it.
+   */
+  private async bankClock(): Promise<void> {
+    if (this.busy) return;
+    const secs = this.takeClockSeconds();
+    if (!secs) return;
+    const state = await stateStore.load(this.ticket.interviewId);
+    if (!state) return; // ended or expired
+    state.totalElapsedSec += secs;
+    state.sectionElapsedSec += secs;
+    await stateStore.save(state);
   }
 
   private send(msg: ServerMessage): void {
@@ -367,6 +399,7 @@ export class VoiceSession {
 
   /** Stop the interview part-way through at the candidate's request. */
   private async endEarly(): Promise<void> {
+    this.ended = true;
     try {
       const ended = await interviewRepository.abandon(this.ticket.interviewId);
       await stateStore.clear(this.ticket.interviewId);
@@ -381,6 +414,9 @@ export class VoiceSession {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    if (!this.ended) {
+      this.bankClock().catch((err) => this.log.error({ err }, 'failed to bank interview clock'));
+    }
     this.stt?.close();
     this.tts?.close();
     if (this.ws.readyState === this.ws.OPEN) this.ws.close();
