@@ -23,6 +23,25 @@ export async function enqueueParse(resumeId: string): Promise<void> {
   );
 }
 
+export interface PurgeJobData {
+  resumeId: string;
+}
+
+export const purgeQueue = new Queue<PurgeJobData>('resume-purge', { connection: bullConnection });
+
+/**
+ * Drop a rejected upload's file from storage shortly after we refuse it. Delayed
+ * rather than immediate so the row and its error message settle first, and so a
+ * burst of bad uploads doesn't turn into a burst of S3 calls.
+ */
+export async function enqueueResumePurge(resumeId: string, delayMs = 120_000): Promise<void> {
+  await purgeQueue.add(
+    'purge',
+    { resumeId },
+    { jobId: `purge:${resumeId}`, delay: delayMs, attempts: 3, backoff: { type: 'exponential', delay: 10_000 }, removeOnComplete: 100, removeOnFail: 200 },
+  );
+}
+
 export const sweepQueue = new Queue('interview-sweep', { connection: bullConnection });
 
 /** Finish interviews whose time ran out. Repeats forever; safe to call on every boot. */

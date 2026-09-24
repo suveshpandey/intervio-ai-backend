@@ -19,6 +19,7 @@ import { attachVoiceGateway } from '@/modules/interview/gateway/ws';
 import { startParseWorker } from '@/jobs/parse.worker';
 import { startReportWorker } from '@/jobs/report.worker';
 import { startSweepWorker } from '@/jobs/sweep.worker';
+import { startPurgeWorker } from '@/jobs/purge.worker';
 import { scheduleInterviewSweep } from '@/jobs/queue';
 
 const app = express();
@@ -88,6 +89,7 @@ const voiceGateway = attachVoiceGateway(server);
 const parseWorker = startParseWorker();
 const reportWorker = startReportWorker();
 const sweepWorker = startSweepWorker();
+const purgeWorker = startPurgeWorker();
 // An interview's clock never pauses, so something must close it out when nobody
 // is there to answer. Repeatable job, so restarts don't pile up duplicates.
 void scheduleInterviewSweep().catch((err: unknown) =>
@@ -102,6 +104,7 @@ async function shutdown(signal: string) {
     parseWorker.close(),
     reportWorker.close(),
     sweepWorker.close(),
+    purgeWorker.close(),
     prisma.$disconnect(),
     redis.quit(),
   ]);

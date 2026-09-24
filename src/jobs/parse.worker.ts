@@ -6,6 +6,19 @@ import { resumeRepository } from '@/modules/resume/resume.repository';
 import { claimRepository } from '@/modules/intelligence/claim.repository';
 import { extractResumeText, type ResumeFileType } from '@/modules/resume/text-extract';
 import { extractResume, extractClaims } from '@/modules/intelligence/extraction';
+import { looksLikeResume, extractionIsEmpty, NOT_A_RESUME } from '@/modules/resume/validate';
+import { enqueueResumePurge } from '@/jobs/queue';
+
+/**
+ * Refuse a file that isn't a resume: tell the user plainly, and bin the upload.
+ * Returning normally (not throwing) matters — a retry would fail identically and
+ * only burn LLM calls.
+ */
+async function reject(resumeId: string, reason: string, why: string): Promise<void> {
+  await resumeRepository.setStatus(resumeId, 'failed', reason);
+  await enqueueResumePurge(resumeId);
+  logger.info({ resumeId, why }, 'upload rejected — not a resume');
+}
 
 /**
  * Resume parse pipeline:
@@ -25,8 +38,18 @@ export function startParseWorker(): Worker<ParseJobData> {
       const type: ResumeFileType = resume.fileName.toLowerCase().endsWith('.pdf') ? 'pdf' : 'docx';
       const text = await extractResumeText(buffer, type);
 
+      // Cheap deterministic gate first — no LLM spend on a menu or keyboard mash.
+      const check = looksLikeResume(text);
+      if (!check.ok) return reject(resumeId, check.reason, 'failed text checks');
+
       // Extraction + claims run against the same text.
       const [extracted, claims] = await Promise.all([extractResume(text), extractClaims(text)]);
+
+      // Passed the text checks but yielded nothing a resume contains: a real
+      // document that simply isn't a CV.
+      if (extractionIsEmpty(extracted) && claims.length === 0) {
+        return reject(resumeId, NOT_A_RESUME, 'extraction came back empty');
+      }
 
       await claimRepository.replaceForResume(resumeId, claims);
       await resumeRepository.setExtracted(resumeId, extracted);
