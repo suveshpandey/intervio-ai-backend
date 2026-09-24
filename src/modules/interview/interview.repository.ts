@@ -41,7 +41,7 @@ export const interviewRepository = {
         startedAt: true,
         endedAt: true,
         blueprint: { select: { role: true, level: true, durationMin: true } },
-        report: { select: { verdict: true } },
+        report: { select: { verdict: true, stats: true } },
         _count: { select: { turns: true } },
       },
     });

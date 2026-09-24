@@ -118,6 +118,8 @@ export const interviewController = {
         endedAt: r.endedAt,
         turnCount: r._count.turns,
         verdict: r.report?.verdict ?? null,
+        // Headline numbers for the dashboard, straight from the saved report.
+        claims: r.report ? (r.report.stats as { claimsSupported: number; claimsProbed: number }) : null,
       })),
     });
   },
