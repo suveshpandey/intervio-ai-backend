@@ -12,3 +12,4 @@ interviewRouter.post('/:id/voice-ticket', interviewController.voiceTicket);
 interviewRouter.post('/:id/end', interviewController.end);
 interviewRouter.get('/:id', interviewController.detail);
 interviewRouter.get('/:id/report', interviewController.report);
+interviewRouter.delete('/:id', interviewController.remove);

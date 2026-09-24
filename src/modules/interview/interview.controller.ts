@@ -83,6 +83,22 @@ export const interviewController = {
     res.json({ status: ended ? 'abandoned' : interview.status });
   },
 
+  /**
+   * Delete an interview and everything it produced. Live ones are closed out
+   * first, so nothing is left running against a row that no longer exists.
+   */
+  async remove(req: Request, res: Response) {
+    const interviewId = param(req, 'id');
+    const { interview } = await getTranscript(req.userId!, interviewId); // 404s if not theirs
+
+    await stateStore.clear(interview.id);
+    clearPrefetch(interview.id);
+    await interviewRepository.remove(interview.id, req.userId!);
+
+    logger.info({ interviewId: interview.id }, 'interview deleted');
+    res.json({ ok: true });
+  },
+
   /** The sidebar's interview history. */
   async list(req: Request, res: Response) {
     // Cheap safety net: if the sweeper is down, the history still tells the truth.

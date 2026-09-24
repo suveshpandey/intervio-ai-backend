@@ -38,6 +38,12 @@ export const interviewRepository = {
     });
   },
 
+  /** Hard delete, user-scoped. Cascades to turns, evidence and the report. */
+  async remove(id: string, userId: string): Promise<boolean> {
+    const { count } = await prisma.interview.deleteMany({ where: { id, userId } });
+    return count > 0;
+  },
+
   countAnswered(interviewId: string): Promise<number> {
     return prisma.turn.count({ where: { interviewId, answerTranscript: { not: null } } });
   },

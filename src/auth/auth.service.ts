@@ -8,6 +8,8 @@ import {
   signRefreshToken,
   verifyRefreshToken,
 } from '@/auth/token.service';
+import { resumeRepository } from '@/modules/resume/resume.repository';
+import { deleteObject } from '@/storage/s3';
 import { refreshStore } from '@/auth/refresh-store';
 import { resetStore } from '@/auth/reset-store';
 import { sendWelcomeEmail, sendPasswordResetEmail } from '@/email';
@@ -146,8 +148,20 @@ export const authService = {
       if (!ok) throw badRequest('Password is incorrect', 'wrong_password');
     }
 
+    // Purge stored files BEFORE the rows go: once the resumes are deleted we no
+    // longer know which S3 objects were theirs, and they'd sit there forever.
+    const files = await resumeRepository.listFileKeys(userId);
+    const purged = await Promise.allSettled(files.map((f) => deleteObject(f.fileUrl)));
+    const failed = purged.filter((p) => p.status === 'rejected').length;
+    if (failed) {
+      // Deleting the account still goes ahead — a stuck file must not trap someone
+      // in an account they asked us to delete.
+      logger.error({ userId, failed, total: files.length }, 'some resume files could not be purged');
+    }
+
     await refreshStore.removeAll(userId);
     await userRepository.hardDelete(userId);
+    logger.info({ userId, filesPurged: files.length - failed }, 'account deleted');
   },
 
   /** Find-or-create a user from a verified Google identity, then issue tokens. */

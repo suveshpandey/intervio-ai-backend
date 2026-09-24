@@ -12,19 +12,21 @@ export const resumeRepository = {
   },
 
   findById(id: string, userId: string): Promise<Resume | null> {
-    return prisma.resume.findFirst({ where: { id, userId, deletedAt: null } });
+    return prisma.resume.findFirst({ where: { id, userId } });
   },
 
   /** Internal lookup (worker) — not user-scoped. */
   findByIdUnscoped(id: string): Promise<Resume | null> {
-    return prisma.resume.findFirst({ where: { id, deletedAt: null } });
+    return prisma.resume.findUnique({ where: { id } });
   },
 
   listByUser(userId: string): Promise<Resume[]> {
-    return prisma.resume.findMany({
-      where: { userId, deletedAt: null },
-      orderBy: { createdAt: 'desc' },
-    });
+    return prisma.resume.findMany({ where: { userId }, orderBy: { createdAt: 'desc' } });
+  },
+
+  /** Every stored file for a user — so account deletion can purge S3 too. */
+  listFileKeys(userId: string): Promise<{ fileUrl: string }[]> {
+    return prisma.resume.findMany({ where: { userId }, select: { fileUrl: true } });
   },
 
   setStatus(id: string, parseStatus: Prisma.ResumeUpdateInput['parseStatus'], parseError?: string) {
@@ -38,10 +40,13 @@ export const resumeRepository = {
     });
   },
 
-  softDelete(id: string, userId: string) {
-    return prisma.resume.updateMany({
-      where: { id, userId, deletedAt: null },
-      data: { deletedAt: new Date() },
-    });
+  /**
+   * Hard delete, user-scoped. Cascades to claims, blueprints, interviews, turns,
+   * evidence and reports — a soft delete would leave the CV's contents behind,
+   * which is exactly what someone deleting it wants gone.
+   */
+  async hardDelete(id: string, userId: string): Promise<boolean> {
+    const { count } = await prisma.resume.deleteMany({ where: { id, userId } });
+    return count > 0;
   },
 };

@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import { nanoid } from 'nanoid';
 import { badRequest, notFound } from '@/common/errors';
 import { param } from '@/common/http';
+import { logger } from '@/common/logger';
 import { putObject, deleteObject } from '@/storage/s3';
 import { ACCEPTED_MIME } from '@/modules/resume/text-extract';
 import { resumeRepository } from '@/modules/resume/resume.repository';
@@ -66,8 +67,12 @@ export const resumeController = {
   async remove(req: Request, res: Response) {
     const resume = await resumeRepository.findById(param(req, 'id'), req.userId!);
     if (!resume) throw notFound('Resume not found');
-    await resumeRepository.softDelete(resume.id, req.userId!);
-    await deleteObject(resume.fileUrl).catch(() => {}); // best-effort storage purge
+    // Storage first: a stray row is recoverable, an orphaned file in S3 is the
+    // thing someone asked us to get rid of.
+    await deleteObject(resume.fileUrl).catch((err: unknown) =>
+      logger.error({ err, resumeId: resume.id }, 'failed to purge resume file from storage'),
+    );
+    await resumeRepository.hardDelete(resume.id, req.userId!);
     res.json({ ok: true });
   },
 };
