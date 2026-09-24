@@ -17,6 +17,7 @@ import { interviewRouter } from '@/modules/interview/interview.routes';
 import { voiceRouter } from '@/modules/voice/voice.routes';
 import { attachVoiceGateway } from '@/modules/interview/gateway/ws';
 import { startParseWorker } from '@/jobs/parse.worker';
+import { startReportWorker } from '@/jobs/report.worker';
 
 const app = express();
 
@@ -83,12 +84,18 @@ const voiceGateway = attachVoiceGateway(server);
 
 // Background worker runs in-process alongside the API for the MVP.
 const parseWorker = startParseWorker();
+const reportWorker = startReportWorker();
 
 async function shutdown(signal: string) {
   logger.info(`${signal} received — shutting down`);
   server.close();
   voiceGateway.close();
-  await Promise.allSettled([parseWorker.close(), prisma.$disconnect(), redis.quit()]);
+  await Promise.allSettled([
+    parseWorker.close(),
+    reportWorker.close(),
+    prisma.$disconnect(),
+    redis.quit(),
+  ]);
   process.exit(0);
 }
 

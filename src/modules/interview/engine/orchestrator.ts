@@ -4,6 +4,7 @@ import { badRequest, notFound } from '@/common/errors';
 import { logger } from '@/common/logger';
 import type { PlanSection } from '@/modules/planner/schema';
 import { stateStore } from '@/modules/interview/state.store';
+import { enqueueReport } from '@/jobs/queue';
 import { interviewRepository } from '@/modules/interview/interview.repository';
 import { buildCompactState } from '@/modules/interview/context/compact-state';
 import { evaluateAnswer } from '@/modules/interview/evaluation/evaluate';
@@ -12,7 +13,14 @@ import {
   generateOpeningQuestion,
   FALLBACK_QUESTION,
 } from '@/modules/interview/question/generate';
-import { decide, isRepeat, isWeak, predictMoveOn, verdictFor } from '@/modules/interview/engine/rules';
+import {
+  CONFIDENCE_DELTA,
+  decide,
+  isRepeat,
+  isWeak,
+  predictMoveOn,
+  verdictFor,
+} from '@/modules/interview/engine/rules';
 import { storePrefetch, takePrefetch, clearPrefetch } from '@/modules/interview/engine/prefetch';
 import type {
   Decision,
@@ -26,14 +34,6 @@ import type {
  * duration; for typed/dev runs we estimate so time budgets behave realistically.
  */
 export const ESTIMATED_TURN_SECONDS = 45;
-
-/** Confidence movement per evidence verdict. */
-const CONFIDENCE_DELTA: Record<EvalResult['claimEvidence'], number> = {
-  support: 0.3,
-  partial: 0.15,
-  none: 0,
-  weaken: -0.25,
-};
 
 const MAX_SUMMARY = 6;
 const MAX_LAST_TURNS = 2;
@@ -198,6 +198,10 @@ export async function submitAnswer(
     state.phase = 'done';
     await stateStore.save(state);
     await interviewRepository.complete(interviewId);
+    // Build the report while they're still reading the "interview complete" screen.
+    await enqueueReport(interviewId, userId).catch((err: unknown) =>
+      logger.error({ err, interviewId }, 'failed to queue report'),
+    );
     return {
       interviewId,
       turnIdx: state.turnIdx,

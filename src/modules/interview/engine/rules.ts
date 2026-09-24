@@ -27,6 +27,18 @@ export const WEAK_STREAK_LIMIT = 2;
 /** answerQuality below this counts as "weak". */
 export const WEAK_QUALITY = 0.45;
 
+/**
+ * Confidence movement per evidence verdict, scaled by answer quality.
+ * The report recomputes claim confidence from the saved turns with these same
+ * numbers, so what the interview believed and what the report says can't drift.
+ */
+export const CONFIDENCE_DELTA: Record<EvalResult['claimEvidence'], number> = {
+  support: 0.3,
+  partial: 0.15,
+  none: 0,
+  weaken: -0.25,
+};
+
 const DIFFICULTY_ORDER: Difficulty[] = ['easy', 'standard', 'hard'];
 /** Actions that mean "keep working the current topic". */
 const DIGGING: ReadonlySet<Action> = new Set(['PROBE', 'FOLLOW_UP', 'CHALLENGE', 'CLARIFY']);

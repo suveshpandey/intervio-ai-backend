@@ -130,6 +130,7 @@ model Interview {
   blueprint Blueprint  @relation(fields: [blueprintId], references: [id], onDelete: Cascade)
   turns     Turn[]
   evidence  Evidence[]
+  report    Report?
 
   @@index([userId])
   @@index([blueprintId])
@@ -165,6 +166,33 @@ model Turn {
 
 /// Support/weaken signal for a claim, written as the interview runs.
 /// The final claim audit (Phase 5) aggregates these.
+/**
+ * One report per interview. Every number here is computed by our own code
+ * (modules/report/scoring.ts) and can be rebuilt from turns + evidence at any
+ * time; only `narrative` is written by an LLM, after a safe-language check.
+ */
+model Report {
+  id          String @id @default(uuid())
+  interviewId String @unique @map("interview_id")
+
+  verdict         String // ready | almost | not_ready
+  stats           Json
+  skillScores     Json   @map("skill_scores")
+  dimensions      Json
+  claimAudit      Json   @map("claim_audit")
+  readiness       Json
+  improvements    Json
+  narrative       String
+  narrativeSource String @map("narrative_source") // llm | fallback
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  interview Interview @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+
+  @@map("reports")
+}
+
 model Evidence {
   id          String @id @default(uuid())
   interviewId String @map("interview_id")

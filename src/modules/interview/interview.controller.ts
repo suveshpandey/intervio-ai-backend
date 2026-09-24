@@ -5,6 +5,8 @@ import { issueTicket } from '@/modules/interview/gateway/ticket';
 import { interviewRepository } from '@/modules/interview/interview.repository';
 import { stateStore } from '@/modules/interview/state.store';
 import { clearPrefetch } from '@/modules/interview/engine/prefetch';
+import { enqueueReport } from '@/jobs/queue';
+import { getOrCreateReport } from '@/modules/report/report.service';
 import { logger } from '@/common/logger';
 import {
   startInterview,
@@ -68,7 +70,13 @@ export const interviewController = {
     const ended = await interviewRepository.abandon(interview.id);
     await stateStore.clear(interview.id);
     clearPrefetch(interview.id);
-    if (ended) logger.info({ interviewId: interview.id }, 'interview ended early by candidate');
+    if (ended) {
+      logger.info({ interviewId: interview.id }, 'interview ended early by candidate');
+      // A part-finished interview still earns a report, if enough was answered.
+      await enqueueReport(interview.id, req.userId!).catch((err: unknown) =>
+        logger.error({ err, interviewId: interview.id }, 'failed to queue report'),
+      );
+    }
 
     res.json({ status: ended ? 'abandoned' : interview.status });
   },
@@ -92,5 +100,15 @@ export const interviewController = {
         chosenAction: t.chosenAction,
       })),
     });
+  },
+
+  /**
+   * The report for a finished interview. Normally the background job has already
+   * built it; if not (job still running, or Redis was down), this builds it now
+   * so the page is never a dead end.
+   */
+  async report(req: Request, res: Response) {
+    const report = await getOrCreateReport(req.userId!, param(req, 'id'));
+    res.json({ report });
   },
 };
