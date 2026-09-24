@@ -9,6 +9,15 @@ export const interviewRepository = {
     });
   },
 
+  /** A user's interview that is still running, if any. */
+  findLiveForUser(userId: string) {
+    return prisma.interview.findFirst({
+      where: { userId, status: 'live' },
+      orderBy: { startedAt: 'desc' },
+      select: { id: true, startedAt: true, blueprint: { select: { durationMin: true } } },
+    });
+  },
+
   findById(id: string, userId: string) {
     return prisma.interview.findFirst({
       where: { id, userId },

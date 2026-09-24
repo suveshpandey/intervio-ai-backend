@@ -1,17 +1,18 @@
 import type { Blueprint } from '@prisma/client';
 import { prisma } from '@/db/prisma';
-import { badRequest, notFound } from '@/common/errors';
+import { AppError, badRequest, notFound } from '@/common/errors';
 import { logger } from '@/common/logger';
 import type { PlanSection } from '@/modules/planner/schema';
 import { stateStore } from '@/modules/interview/state.store';
 import { enqueueReport } from '@/jobs/queue';
+import { expireFinishedInterviews } from '@/modules/interview/expire';
 import { interviewRepository } from '@/modules/interview/interview.repository';
 import { buildCompactState } from '@/modules/interview/context/compact-state';
 import { evaluateAnswer } from '@/modules/interview/evaluation/evaluate';
 import {
   generateQuestion,
   generateOpeningQuestion,
-  FALLBACK_QUESTION,
+  isFallbackQuestion,
 } from '@/modules/interview/question/generate';
 import {
   CONFIDENCE_DELTA,
@@ -75,6 +76,20 @@ export async function startInterview(userId: string, blueprintId: string): Promi
 
   const sections = sectionsOf(blueprint);
   if (sections.length === 0) throw badRequest('Blueprint has no sections', 'bad_blueprint');
+
+  // One live interview per user (PRD). Sweep first, so an interview whose time
+  // is already up doesn't block a new one.
+  await expireFinishedInterviews().catch((err: unknown) =>
+    logger.error({ err }, 'sweep before start failed'),
+  );
+  const running = await interviewRepository.findLiveForUser(userId);
+  if (running) {
+    throw new AppError(
+      409,
+      'You already have an interview running. Finish it, end it, or wait for its time to run out.',
+      'interview_in_progress',
+    );
+  }
 
   const interview = await interviewRepository.create(userId, blueprint.id);
 
@@ -442,7 +457,8 @@ function prefetchMoveOn(state: InterviewState, blueprint: Blueprint, sections: P
             'MOVE_ON',
             `${move.objective}. This is a fresh topic: open it directly — no thanks or acknowledgement, and don't refer to earlier answers.`,
           );
-    return q === FALLBACK_QUESTION ? null : q;
+    // A canned line is not worth holding on to — let the real turn try again.
+    return isFallbackQuestion(q) ? null : q;
   })().catch((err: unknown) => {
     logger.warn({ err, interviewId: state.interviewId }, 'question prefetch failed');
     return null;

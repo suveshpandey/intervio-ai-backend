@@ -7,6 +7,7 @@ import {
   type LlmTask,
 } from '@/config/models';
 import { callEuri, type ChatMessage, type ChatOptions, type ChatResult } from '@/llm/client';
+import { isOpen, recordFailure, recordSuccess } from '@/llm/breaker';
 import { tryParse } from '@/llm/json';
 import { AppError } from '@/common/errors';
 import { logger } from '@/common/logger';
@@ -25,11 +26,26 @@ export async function chat(
     reasoningEffort: opts.reasoningEffort ?? TASK_REASONING[task],
     timeoutMs: opts.timeoutMs ?? TASK_TIMEOUT_MS[task],
   };
+  // Primary is in its cooldown after repeated failures — don't spend the timeout
+  // rediscovering that on every single turn.
+  if (!isOpen(primary)) {
+    try {
+      const result = await callEuri(primary, messages, withPolicy);
+      recordSuccess(primary);
+      return result;
+    } catch (err) {
+      recordFailure(primary);
+      logger.warn({ err, task, primary, fallback }, 'LLM primary failed — falling back');
+    }
+  }
+
   try {
-    return await callEuri(primary, messages, withPolicy);
+    const result = await callEuri(fallback, messages, withPolicy);
+    recordSuccess(fallback);
+    return result;
   } catch (err) {
-    logger.warn({ err, task, primary, fallback }, 'LLM primary failed — falling back');
-    return callEuri(fallback, messages, withPolicy);
+    recordFailure(fallback);
+    throw err;
   }
 }
 
