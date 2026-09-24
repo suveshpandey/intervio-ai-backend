@@ -23,6 +23,13 @@ export async function enqueueParse(resumeId: string): Promise<void> {
   );
 }
 
+export const sweepQueue = new Queue('interview-sweep', { connection: bullConnection });
+
+/** Finish interviews whose time ran out. Repeats forever; safe to call on every boot. */
+export async function scheduleInterviewSweep(everyMs = 60_000): Promise<void> {
+  await sweepQueue.add('sweep', {}, { repeat: { every: everyMs }, removeOnComplete: 20, removeOnFail: 50 });
+}
+
 export const reportQueue = new Queue<ReportJobData>('interview-report', { connection: bullConnection });
 
 /**

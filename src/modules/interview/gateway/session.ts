@@ -61,14 +61,12 @@ export class VoiceSession {
   private muted = false;
   private busy = false;
   private closed = false;
-  /** Interview is over (finished or ended early) — nothing left to bank. */
-  private ended = false;
   /** When the current question finished playing — diagnostics only. */
   private listeningSince = Date.now();
   /**
-   * The interview clock is real, connected time. `state.totalElapsedSec` is
-   * accurate up to this instant; everything since is still running on the clock.
-   * It only stops when the socket closes (see close()).
+   * The interview clock is REAL TIME since it started and never pauses — closing
+   * the tab doesn't buy you more time, and a sweeper finishes it once the
+   * duration is up. `state.totalElapsedSec` is accurate up to this instant.
    */
   private clockMark = Date.now();
   private micFrames = 0;
@@ -116,8 +114,9 @@ export class VoiceSession {
       { voice: this.voice, keyterms: keyterms.length, pending: Boolean(state.pendingQuestion) },
       'voice session started',
     );
-    // (Re)joining starts the clock from wherever the saved state left it.
-    this.clockMark = Date.now();
+    // Anchor the clock to the real start, so time spent away still counts.
+    const startedAt = await interviewRepository.startedAt(this.ticket.interviewId);
+    this.clockMark = (startedAt?.getTime() ?? Date.now()) + state.totalElapsedSec * 1000;
     this.sendState(state);
 
     // Speak whatever question is already pending (the interview was started over HTTP).
@@ -293,7 +292,6 @@ export class VoiceSession {
 
       if (result.done || !result.question) {
         this.send({ type: 'done' });
-        this.ended = true;
         this.close();
         return;
       }
@@ -391,22 +389,6 @@ export class VoiceSession {
     });
   }
 
-  /**
-   * Socket dropped mid-interview: bank the time since the last mark so the clock
-   * pauses here and resumes on rejoin. Skipped while a turn is in flight — that
-   * turn saves state itself, and writing now would race it.
-   */
-  private async bankClock(): Promise<void> {
-    if (this.busy) return;
-    const secs = this.takeClockSeconds();
-    if (!secs) return;
-    const state = await stateStore.load(this.ticket.interviewId);
-    if (!state) return; // ended or expired
-    state.totalElapsedSec += secs;
-    state.sectionElapsedSec += secs;
-    await stateStore.save(state);
-  }
-
   /** Raw PCM to the browser in frame-sized pieces (sent synchronously, so ordering is guaranteed). */
   private sendAudio(pcm: Buffer): void {
     if (this.ws.readyState !== this.ws.OPEN) return;
@@ -438,7 +420,6 @@ export class VoiceSession {
 
   /** Stop the interview part-way through at the candidate's request. */
   private async endEarly(): Promise<void> {
-    this.ended = true;
     try {
       const ended = await interviewRepository.abandon(this.ticket.interviewId);
       await stateStore.clear(this.ticket.interviewId);
@@ -454,9 +435,6 @@ export class VoiceSession {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    if (!this.ended) {
-      this.bankClock().catch((err) => this.log.error({ err }, 'failed to bank interview clock'));
-    }
     this.stt?.close();
     this.tts?.close();
     if (this.ws.readyState === this.ws.OPEN) this.ws.close();

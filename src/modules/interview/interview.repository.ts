@@ -16,6 +16,70 @@ export const interviewRepository = {
     });
   },
 
+  /**
+   * Every interview this user has run, newest first — the sidebar's history.
+   * Carries just enough per row to label it without a second request.
+   */
+  listForUser(userId: string, take = 50) {
+    return prisma.interview.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take,
+      select: {
+        id: true,
+        status: true,
+        createdAt: true,
+        startedAt: true,
+        endedAt: true,
+        blueprint: { select: { role: true, level: true, durationMin: true } },
+        report: { select: { verdict: true } },
+        _count: { select: { turns: true } },
+      },
+    });
+  },
+
+  countAnswered(interviewId: string): Promise<number> {
+    return prisma.turn.count({ where: { interviewId, answerTranscript: { not: null } } });
+  },
+
+  async startedAt(id: string): Promise<Date | null> {
+    const row = await prisma.interview.findUnique({ where: { id }, select: { startedAt: true } });
+    return row?.startedAt ?? null;
+  },
+
+  /**
+   * Interviews whose time is up but that are still marked live — almost always a
+   * closed tab. Returned with what the finaliser needs to decide on a report.
+   */
+  findExpired(graceSec: number, take = 50) {
+    return prisma.interview.findMany({
+      where: { status: 'live', startedAt: { not: null } },
+      orderBy: { startedAt: 'asc' },
+      take,
+      select: {
+        id: true,
+        userId: true,
+        startedAt: true,
+        blueprint: { select: { durationMin: true } },
+        _count: { select: { turns: true } },
+      },
+    }).then((rows) =>
+      rows.filter((r) => {
+        const endsAt = r.startedAt!.getTime() + (r.blueprint.durationMin * 60 + graceSec) * 1000;
+        return endsAt <= Date.now();
+      }),
+    );
+  },
+
+  /** Close out an interview whose clock ran out. Scoped to `live` so it can't undo a real finish. */
+  async expire(id: string, endedAt: Date): Promise<boolean> {
+    const { count } = await prisma.interview.updateMany({
+      where: { id, status: 'live' },
+      data: { status: 'completed', endedAt },
+    });
+    return count > 0;
+  },
+
   createTurn(data: {
     interviewId: string;
     idx: number;

@@ -7,7 +7,9 @@ import { stateStore } from '@/modules/interview/state.store';
 import { clearPrefetch } from '@/modules/interview/engine/prefetch';
 import { enqueueReport } from '@/jobs/queue';
 import { getOrCreateReport } from '@/modules/report/report.service';
+import { expireFinishedInterviews } from '@/modules/interview/expire';
 import { logger } from '@/common/logger';
+import type { EvalResult } from '@/modules/interview/types';
 import {
   startInterview,
   submitAnswer,
@@ -81,6 +83,29 @@ export const interviewController = {
     res.json({ status: ended ? 'abandoned' : interview.status });
   },
 
+  /** The sidebar's interview history. */
+  async list(req: Request, res: Response) {
+    // Cheap safety net: if the sweeper is down, the history still tells the truth.
+    await expireFinishedInterviews().catch((err: unknown) =>
+      logger.error({ err }, 'inline interview sweep failed'),
+    );
+    const rows = await interviewRepository.listForUser(req.userId!);
+    res.json({
+      interviews: rows.map((r) => ({
+        id: r.id,
+        status: r.status,
+        role: r.blueprint.role,
+        level: r.blueprint.level,
+        durationMin: r.blueprint.durationMin,
+        createdAt: r.createdAt,
+        startedAt: r.startedAt,
+        endedAt: r.endedAt,
+        turnCount: r._count.turns,
+        verdict: r.report?.verdict ?? null,
+      })),
+    });
+  },
+
   async detail(req: Request, res: Response) {
     const { interview, turns } = await getTranscript(req.userId!, param(req, 'id'));
     res.json({
@@ -90,6 +115,9 @@ export const interviewController = {
         startedAt: interview.startedAt,
         endedAt: interview.endedAt,
         blueprintId: interview.blueprintId,
+        role: interview.blueprint.role,
+        level: interview.blueprint.level,
+        durationMin: interview.blueprint.durationMin,
       },
       turns: turns.map((t) => ({
         idx: t.idx,
@@ -98,6 +126,19 @@ export const interviewController = {
         question: t.questionText,
         answer: t.answerTranscript,
         chosenAction: t.chosenAction,
+        askedAt: t.askedAt,
+        // The scores behind the report, so the transcript can show its working.
+        evaluation: t.eval
+          ? (() => {
+              const e = t.eval as unknown as EvalResult;
+              return {
+                answerQuality: e.answerQuality,
+                technicalDepth: e.technicalDepth,
+                claimEvidence: e.claimEvidence,
+                issue: e.issue,
+              };
+            })()
+          : null,
       })),
     });
   },

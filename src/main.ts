@@ -18,6 +18,8 @@ import { voiceRouter } from '@/modules/voice/voice.routes';
 import { attachVoiceGateway } from '@/modules/interview/gateway/ws';
 import { startParseWorker } from '@/jobs/parse.worker';
 import { startReportWorker } from '@/jobs/report.worker';
+import { startSweepWorker } from '@/jobs/sweep.worker';
+import { scheduleInterviewSweep } from '@/jobs/queue';
 
 const app = express();
 
@@ -85,6 +87,12 @@ const voiceGateway = attachVoiceGateway(server);
 // Background worker runs in-process alongside the API for the MVP.
 const parseWorker = startParseWorker();
 const reportWorker = startReportWorker();
+const sweepWorker = startSweepWorker();
+// An interview's clock never pauses, so something must close it out when nobody
+// is there to answer. Repeatable job, so restarts don't pile up duplicates.
+void scheduleInterviewSweep().catch((err: unknown) =>
+  logger.error({ err }, 'failed to schedule the interview sweep'),
+);
 
 async function shutdown(signal: string) {
   logger.info(`${signal} received — shutting down`);
@@ -93,6 +101,7 @@ async function shutdown(signal: string) {
   await Promise.allSettled([
     parseWorker.close(),
     reportWorker.close(),
+    sweepWorker.close(),
     prisma.$disconnect(),
     redis.quit(),
   ]);
