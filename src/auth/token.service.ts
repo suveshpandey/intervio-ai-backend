@@ -28,9 +28,12 @@ export function signRefreshToken(userId: string): { token: string; jti: string }
   return { token, jti };
 }
 
+/** Pinned so a future jsonwebtoken change can't accept a different algorithm. */
+const ALGORITHMS = ['HS256'] as const;
+
 export function verifyAccessToken(token: string): AccessPayload {
   try {
-    return jwt.verify(token, env.JWT_ACCESS_SECRET) as AccessPayload;
+    return jwt.verify(token, env.JWT_ACCESS_SECRET, { algorithms: [...ALGORITHMS] }) as AccessPayload;
   } catch {
     throw unauthorized('Invalid or expired access token');
   }
@@ -38,7 +41,7 @@ export function verifyAccessToken(token: string): AccessPayload {
 
 export function verifyRefreshToken(token: string): RefreshPayload {
   try {
-    return jwt.verify(token, env.JWT_REFRESH_SECRET) as RefreshPayload;
+    return jwt.verify(token, env.JWT_REFRESH_SECRET, { algorithms: [...ALGORITHMS] }) as RefreshPayload;
   } catch {
     throw unauthorized('Invalid or expired refresh token');
   }

@@ -17,6 +17,16 @@ const schema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
   COOKIE_DOMAIN: z.string().optional(),
+  /**
+   * How many proxies sit in front of us. 0 (the default) means don't trust
+   * X-Forwarded-For at all: with blind trust, anyone could forge that header and
+   * walk straight past the login rate limit. Set it to the real hop count only
+   * once there IS a proxy, and check req.ip in staging afterwards.
+   */
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
+
+  /** Comma-separated emails allowed into /admin. Empty = nobody, which is the safe default. */
+  ADMIN_EMAILS: z.string().default(''),
 
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
@@ -64,7 +74,28 @@ const cleaned = Object.fromEntries(
   Object.entries(process.env).map(([k, v]) => [k, v === '' ? undefined : v]),
 );
 
-const parsed = schema.safeParse(cleaned);
+const parsed = schema
+  .superRefine((cfg, ctx) => {
+    // Shipping prod without Secure cookies is a silent session-token leak over
+    // any plain-http request. Refuse to boot instead.
+    if (cfg.NODE_ENV === 'production' && !cfg.COOKIE_SECURE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['COOKIE_SECURE'],
+        message: 'must be true in production — session cookies would be sent over plain http',
+      });
+    }
+    // Same secret for both means a refresh token also validates as an access
+    // token, bypassing every refresh-store revocation check.
+    if (cfg.JWT_ACCESS_SECRET === cfg.JWT_REFRESH_SECRET) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['JWT_REFRESH_SECRET'],
+        message: 'must differ from JWT_ACCESS_SECRET',
+      });
+    }
+  })
+  .safeParse(cleaned);
 
 if (!parsed.success) {
   console.error('❌ Invalid environment variables:');

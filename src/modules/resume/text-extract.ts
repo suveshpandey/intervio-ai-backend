@@ -9,6 +9,28 @@ export const ACCEPTED_MIME = {
 
 export type ResumeFileType = (typeof ACCEPTED_MIME)[keyof typeof ACCEPTED_MIME];
 
+/** Canonical content type per resolved file type — never echo the client's. */
+export const MIME_FOR: Record<ResumeFileType, string> = {
+  pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+};
+
+/**
+ * What the file actually is, from its magic bytes.
+ *
+ * Both the multipart Content-Type and the filename are attacker-controlled, and
+ * the upload validated one while the worker later trusted the other — so a
+ * crafted pair could route arbitrary bytes into whichever parser it preferred.
+ */
+export function sniffFileType(buffer: Buffer): ResumeFileType | null {
+  if (buffer.length < 4) return null;
+  // %PDF
+  if (buffer.subarray(0, 4).toString('latin1') === '%PDF') return 'pdf';
+  // DOCX is a zip: PK\x03\x04
+  if (buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03 && buffer[3] === 0x04) return 'docx';
+  return null;
+}
+
 /** Extract plain text from a resume file buffer. */
 export async function extractResumeText(buffer: Buffer, type: ResumeFileType): Promise<string> {
   const text = type === 'pdf' ? await fromPdf(buffer) : await fromDocx(buffer);

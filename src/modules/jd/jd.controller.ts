@@ -5,7 +5,10 @@ import { notFound } from '@/common/errors';
 import { param } from '@/common/http';
 import { parseJd } from '@/modules/intelligence/extraction';
 
-const jdInput = z.object({ rawText: z.string().min(30, 'Paste a fuller job description') });
+const jdInput = z.object({
+  // Capped: every call is a paid LLM extraction, and the row is stored.
+  rawText: z.string().min(30, 'Paste a fuller job description').max(20_000),
+});
 
 export const jdController = {
   async create(req: Request, res: Response) {

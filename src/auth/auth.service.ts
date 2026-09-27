@@ -10,6 +10,7 @@ import {
 } from '@/auth/token.service';
 import { resumeRepository } from '@/modules/resume/resume.repository';
 import { deleteObject } from '@/storage/s3';
+import { isAdminEmail } from '@/common/admin-guard';
 import { refreshStore } from '@/auth/refresh-store';
 import { resetStore } from '@/auth/reset-store';
 import { sendWelcomeEmail, sendPasswordResetEmail } from '@/email';
@@ -28,6 +29,8 @@ export function toPublicUser(user: User) {
     name: user.name,
     avatarUrl: user.avatarUrl,
     authProvider: user.authProvider,
+    // Lets the UI hide the admin link rather than link people at a 403.
+    isAdmin: isAdminEmail(user.email),
   };
 }
 
@@ -37,6 +40,9 @@ async function issueTokens(userId: string): Promise<TokenPair> {
   await refreshStore.add(userId, jti);
   return { accessToken, refreshToken };
 }
+
+/** A real bcrypt hash of a random string: compared against when no account exists. */
+const DUMMY_HASH = bcrypt.hashSync('intervio-no-such-account', 12);
 
 export const authService = {
   async signup(email: string, password: string, name?: string): Promise<{ user: User; tokens: TokenPair }> {
@@ -53,7 +59,12 @@ export const authService = {
 
   async login(email: string, password: string): Promise<{ user: User; tokens: TokenPair }> {
     const user = await userRepository.findByEmail(email);
-    if (!user || !user.passwordHash) throw unauthorized('Invalid email or password');
+    if (!user || !user.passwordHash) {
+      // Spend the same ~300ms bcrypt does, or the response time alone tells an
+      // attacker which addresses have accounts.
+      await bcrypt.compare(password, DUMMY_HASH);
+      throw unauthorized('Invalid email or password');
+    }
 
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) throw unauthorized('Invalid email or password');
@@ -105,6 +116,9 @@ export const authService = {
 
     const passwordHash = await bcrypt.hash(newPassword, 12);
     await userRepository.updatePassword(userId, passwordHash);
+    // Someone changing their password is usually locking an intruder out. Without
+    // this, the intruder's refresh token kept rotating for another 30 days.
+    await refreshStore.removeAll(userId);
   },
 
   /**
@@ -115,13 +129,15 @@ export const authService = {
     const user = await userRepository.findByEmail(email);
     if (!user || !user.passwordHash) return;
 
-    const token = await resetStore.create(user.id);
-    const resetUrl = `${env.APP_URL}/reset-password?token=${token}`;
-    try {
+    // Don't await the mail: waiting for Redis + SMTP made a known address answer
+    // hundreds of ms slower than an unknown one, undoing the generic response.
+    void (async () => {
+      const token = await resetStore.create(user.id);
+      const resetUrl = `${env.APP_URL}/reset-password?token=${token}`;
       await sendPasswordResetEmail(user.email, resetUrl, user.name ?? undefined);
-    } catch (err) {
-      logger.error({ err, userId: user.id }, 'Failed to send password-reset email');
-    }
+    })().catch((err: unknown) =>
+      logger.error({ err, userId: user.id }, 'Failed to send password-reset email'),
+    );
   },
 
   /** Complete a password reset with a valid token, then sign the user out everywhere. */

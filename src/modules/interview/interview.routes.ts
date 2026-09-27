@@ -17,7 +17,11 @@ interviewRouter.post(
   }),
   interviewController.create,
 );
-interviewRouter.post('/:id/answer', interviewController.answer);
+interviewRouter.post(
+  '/:id/answer',
+  rateLimit({ name: 'answer', limit: 150, windowSec: 60 * 60 }),
+  interviewController.answer,
+);
 interviewRouter.post(
   '/:id/voice-ticket',
   rateLimit({ name: 'voice-ticket', limit: 60, windowSec: 60 * 60 }),

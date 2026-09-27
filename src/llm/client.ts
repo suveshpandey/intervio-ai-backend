@@ -1,5 +1,6 @@
 import { env } from '@/config/env';
 import { AppError } from '@/common/errors';
+import { usage } from '@/modules/usage/usage.repository';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -16,6 +17,8 @@ export interface ChatOptions {
   signal?: AbortSignal;
   /** Overrides the default request ceiling (REQUEST_TIMEOUT_MS). */
   timeoutMs?: number;
+  /** Which task this call serves — recorded for the cost breakdown. */
+  task?: string;
 }
 
 export interface ChatResult {
@@ -40,6 +43,7 @@ export async function callEuri(
   messages: ChatMessage[],
   opts: ChatOptions = {},
 ): Promise<ChatResult> {
+  const startedAt = Date.now();
   if (!env.EURI_API_KEY) throw new AppError(503, 'LLM is not configured', 'llm_disabled');
 
   // Combine the caller's signal (if any) with our timeout.
@@ -87,9 +91,17 @@ export async function callEuri(
   };
 
   const choice = data.choices?.[0];
+  const tokens = {
+    input: data.usage?.prompt_tokens ?? 0,
+    output: data.usage?.completion_tokens ?? 0,
+  };
+
+  // Metering: fire-and-forget, so billing bookkeeping can never fail a call.
+  usage.llm(model, opts.task, tokens.input, tokens.output, Date.now() - startedAt);
+
   return {
     content: choice?.message?.content ?? '',
-    usage: { input: data.usage?.prompt_tokens ?? 0, output: data.usage?.completion_tokens ?? 0 },
+    usage: tokens,
     model,
     truncated: choice?.finish_reason === 'length',
   };

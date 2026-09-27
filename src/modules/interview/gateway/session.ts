@@ -1,6 +1,7 @@
 import type { WebSocket } from 'ws';
 import { logger } from '@/common/logger';
-import type { ClientMessage, ServerMessage } from '@/contracts/voice';
+import type { ServerMessage } from '@/contracts/voice';
+import { clientMessageSchema, type ValidatedClientMessage } from '@/contracts/voice.schema';
 import { deepgramStt } from '@/modules/voice/deepgram.stt';
 import { deepgramTts } from '@/modules/voice/deepgram.tts';
 import { STT_SAMPLE_RATE, type SttStream, type TtsSession } from '@/modules/voice/types';
@@ -9,6 +10,9 @@ import { interviewRepository } from '@/modules/interview/interview.repository';
 import { submitAnswer } from '@/modules/interview/engine/orchestrator';
 import { clearPrefetch } from '@/modules/interview/engine/prefetch';
 import { warmFillers, pickFiller } from '@/modules/voice/fillers';
+import { usage } from '@/modules/usage/usage.repository';
+import { runWithContext } from '@/common/context';
+import { env } from '@/config/env';
 import { prisma } from '@/db/prisma';
 import type { PlanSection } from '@/modules/planner/schema';
 import type { InterviewState } from '@/modules/interview/types';
@@ -29,6 +33,9 @@ function peakAmplitude(frame: Buffer): number {
  * an "Okay, got it." before every single question becomes a tic.
  */
 const FILLER_CHANCE = 0.75;
+
+/** Slack past the interview's own end before the socket is force-closed. */
+const SESSION_GRACE_MS = 2 * 60_000;
 /** ~200ms of 24kHz PCM16 per frame. */
 const AUDIO_CHUNK_BYTES = 9600;
 
@@ -77,6 +84,10 @@ export class VoiceSession {
   private reconnecting = false;
   /** Last thinking sound, so the same one never plays twice in a row. */
   private lastFiller: string | null = null;
+  private lifetimeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Metering: audio streamed to Deepgram, and characters it spoke back. */
+  private sttBytes = 0;
+  private ttsChars = 0;
 
   /** Blueprint bits needed to report progress; loaded once at start. */
   private sections: PlanSection[] = [];
@@ -117,6 +128,16 @@ export class VoiceSession {
     // Anchor the clock to the real start, so time spent away still counts.
     const startedAt = await interviewRepository.startedAt(this.ticket.interviewId);
     this.clockMark = (startedAt?.getTime() ?? Date.now()) + state.totalElapsedSec * 1000;
+
+    // Hard stop: two paid Deepgram streams must not outlive the interview itself,
+    // however quiet the client goes.
+    const endsInMs =
+      (startedAt?.getTime() ?? Date.now()) + this.durationMin * 60_000 + SESSION_GRACE_MS - Date.now();
+    this.lifetimeTimer = setTimeout(() => {
+      this.log.info('voice session hit its time limit — closing');
+      this.close();
+    }, Math.max(60_000, endsInMs));
+    this.lifetimeTimer.unref();
     this.sendState(state);
 
     // Speak whatever question is already pending (the interview was started over HTTP).
@@ -188,6 +209,7 @@ export class VoiceSession {
         return;
       }
       this.micFrames++;
+      this.sttBytes += data.length;
       this.windowPeak = Math.max(this.windowPeak, peakAmplitude(data));
       // Periodic heartbeat: proves audio is still reaching STT during a silent hang.
       if (this.micFrames % 50 === 0) {
@@ -209,9 +231,16 @@ export class VoiceSession {
       return;
     }
 
-    let msg: ClientMessage;
+    // Validate before use: everything below this line used to be whatever the
+    // client claimed, including an unbounded `text_answer`.
+    let msg: ValidatedClientMessage;
     try {
-      msg = JSON.parse(data.toString()) as ClientMessage;
+      const parsed = clientMessageSchema.safeParse(JSON.parse(data.toString()));
+      if (!parsed.success) {
+        this.log.warn({ issues: parsed.error.issues.slice(0, 2) }, 'ignored malformed client message');
+        return;
+      }
+      msg = parsed.data;
     } catch {
       return;
     }
@@ -238,8 +267,13 @@ export class VoiceSession {
         );
         break;
       case 'text_answer':
-        // Dev path: lets us exercise a full turn without a microphone.
-        if (msg.text?.trim()) void this.finishTurn(msg.text.trim());
+        // Dev path: a full turn without a microphone. Never in production, where
+        // it would be a way to drive paid LLM calls without speaking.
+        if (env.NODE_ENV === 'production') {
+          this.log.warn('text_answer rejected — voice only in production');
+          break;
+        }
+        void this.finishTurn(msg.text);
         break;
       default:
         break;
@@ -258,7 +292,14 @@ export class VoiceSession {
     void this.finishTurn(answer);
   }
 
-  private async finishTurn(answer: string): Promise<void> {
+  private finishTurn(answer: string): Promise<void> {
+    // A turn is not an HTTP request, so nothing has set the work context yet.
+    return runWithContext({ userId: this.ticket.userId, interviewId: this.ticket.interviewId }, () =>
+      this.runTurn(answer),
+    );
+  }
+
+  private async runTurn(answer: string): Promise<void> {
     if (this.busy || this.closed) return;
     this.busy = true;
     this.answerParts = [];
@@ -337,6 +378,7 @@ export class VoiceSession {
   private async speak(text: string): Promise<number> {
     if (!this.tts || this.closed) return 0;
     this.speaking = true;
+    this.ttsChars += text.length;
     const t0 = Date.now();
     let firstByteMs = 0;
     try {
@@ -389,6 +431,18 @@ export class VoiceSession {
     });
   }
 
+  /**
+   * One usage row per session rather than per frame: a 15-minute interview is
+   * ~9000 mic frames, and nobody needs 9000 rows to know what it cost.
+   */
+  private meterAudio(): void {
+    const seconds = this.sttBytes / (STT_SAMPLE_RATE * 2); // PCM16 = 2 bytes/sample
+    runWithContext({ userId: this.ticket.userId, interviewId: this.ticket.interviewId }, () => {
+      usage.stt(env.DEEPGRAM_STT_MODEL, seconds);
+      usage.tts(this.voice ?? env.DEEPGRAM_TTS_MODEL, this.ttsChars);
+    });
+  }
+
   /** Raw PCM to the browser in frame-sized pieces (sent synchronously, so ordering is guaranteed). */
   private sendAudio(pcm: Buffer): void {
     if (this.ws.readyState !== this.ws.OPEN) return;
@@ -435,6 +489,8 @@ export class VoiceSession {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    if (this.lifetimeTimer) clearTimeout(this.lifetimeTimer);
+    this.meterAudio();
     this.stt?.close();
     this.tts?.close();
     if (this.ws.readyState === this.ws.OPEN) this.ws.close();

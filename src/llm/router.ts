@@ -25,6 +25,7 @@ export async function chat(
     ...opts,
     reasoningEffort: opts.reasoningEffort ?? TASK_REASONING[task],
     timeoutMs: opts.timeoutMs ?? TASK_TIMEOUT_MS[task],
+    task,
   };
   // Primary is in its cooldown after repeated failures — don't spend the timeout
   // rediscovering that on every single turn.

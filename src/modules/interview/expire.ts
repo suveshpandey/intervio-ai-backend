@@ -15,6 +15,7 @@ import { interviewRepository } from '@/modules/interview/interview.repository';
 import { stateStore } from '@/modules/interview/state.store';
 import { clearPrefetch } from '@/modules/interview/engine/prefetch';
 import { enqueueReport } from '@/jobs/queue';
+import { closeVoiceSession } from '@/modules/interview/gateway/ws';
 import { MIN_ANSWERS_FOR_REPORT } from '@/modules/report/scoring';
 
 /**
@@ -37,6 +38,8 @@ export async function expireFinishedInterviews(): Promise<number> {
 
     await stateStore.clear(interview.id).catch(() => {});
     clearPrefetch(interview.id);
+    // The row is closed; the socket and its two paid Deepgram streams must go too.
+    closeVoiceSession(interview.id);
 
     const answered = await interviewRepository.countAnswered(interview.id);
     if (answered >= MIN_ANSWERS_FOR_REPORT) {

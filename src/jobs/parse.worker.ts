@@ -35,7 +35,9 @@ export function startParseWorker(): Worker<ParseJobData> {
       await resumeRepository.setStatus(resumeId, 'processing');
 
       const buffer = await getObject(resume.fileUrl);
-      const type: ResumeFileType = resume.fileName.toLowerCase().endsWith('.pdf') ? 'pdf' : 'docx';
+      // From the server-generated S3 key, not the user-supplied filename: those
+      // two disagreeing is how arbitrary bytes reach a chosen parser.
+      const type: ResumeFileType = resume.fileUrl.toLowerCase().endsWith('.pdf') ? 'pdf' : 'docx';
       const text = await extractResumeText(buffer, type);
 
       // Cheap deterministic gate first — no LLM spend on a menu or keyboard mash.
@@ -62,7 +64,14 @@ export function startParseWorker(): Worker<ParseJobData> {
   worker.on('failed', async (job, err) => {
     logger.error({ jobId: job?.id, err }, 'Parse job failed');
     if (job?.data.resumeId && job.attemptsMade >= (job.opts.attempts ?? 1)) {
-      await resumeRepository.setStatus(job.data.resumeId, 'failed', err.message).catch(() => {});
+      // A generic message: err.message here is library/S3/LLM internals, and it
+      // is shown to whoever uploaded the file.
+      await resumeRepository
+        .setStatus(job.data.resumeId, 'failed', "We couldn't read that file. Try a text-based PDF or DOCX.")
+        .catch(() => {});
+      // Bin the upload too — only the validation path used to do this, so
+      // anything that failed mid-parse kept its file in the bucket forever.
+      await enqueueResumePurge(job.data.resumeId).catch(() => {});
     }
   });
 

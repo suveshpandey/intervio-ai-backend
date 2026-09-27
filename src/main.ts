@@ -7,6 +7,7 @@ import { env, corsOrigins, emailEnabled, emailTransport } from '@/config/env';
 import { logger } from '@/common/logger';
 import { verifyTransport } from '@/email/mailer';
 import { errorHandler, notFoundHandler } from '@/common/http';
+import { checkOrigin } from '@/common/origin-guard';
 import { prisma } from '@/db/prisma';
 import { redis } from '@/db/redis';
 import { authRouter } from '@/auth/auth.routes';
@@ -15,6 +16,7 @@ import { jdRouter } from '@/modules/jd/jd.routes';
 import { blueprintRouter } from '@/modules/planner/planner.routes';
 import { interviewRouter } from '@/modules/interview/interview.routes';
 import { voiceRouter } from '@/modules/voice/voice.routes';
+import { adminRouter } from '@/modules/usage/usage.routes';
 import { attachVoiceGateway } from '@/modules/interview/gateway/ws';
 import { startParseWorker } from '@/jobs/parse.worker';
 import { startReportWorker } from '@/jobs/report.worker';
@@ -24,9 +26,12 @@ import { scheduleInterviewSweep } from '@/jobs/queue';
 
 const app = express();
 
-app.set('trust proxy', 1); // behind a load balancer in prod (correct secure-cookie handling)
+// Only trust X-Forwarded-For when a proxy really is in front (TRUST_PROXY_HOPS).
+// Trusting it unconditionally let anyone forge their IP and evade rate limits.
+app.set('trust proxy', env.TRUST_PROXY_HOPS);
 app.use(helmet());
 app.use(cors({ origin: corsOrigins, credentials: true }));
+app.use(checkOrigin); // CORS alone doesn't stop body-less cross-site POSTs landing
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 // One concise line per request. The default dumps every header and cookie, which
@@ -35,10 +40,13 @@ app.use(
   pinoHttp({
     logger,
     autoLogging: { ignore: (req) => req.url === '/health' },
-    customSuccessMessage: (req, res) => `${req.method} ${req.url} ${res.statusCode}`,
-    customErrorMessage: (req, res, err) => `${req.method} ${req.url} ${res.statusCode} ${err.message}`,
+    customSuccessMessage: (req, res) => `${req.method} ${(req.url ?? '').split('?')[0]} ${res.statusCode}`,
+    customErrorMessage: (req, res, err) =>
+      `${req.method} ${(req.url ?? '').split('?')[0]} ${res.statusCode} ${err.message}`,
     serializers: {
-      req: (req) => ({ method: req.method, url: req.url }),
+      // Path only: /auth/google/callback?code=… would otherwise write a live
+      // OAuth authorization code into every log sink.
+      req: (req) => ({ method: req.method, url: (req.url ?? '').split('?')[0] }),
       res: (res) => ({ status: res.statusCode }),
     },
   }),
@@ -61,6 +69,7 @@ app.use('/auth', authRouter);
 app.use('/resumes', resumeRouter);
 app.use('/jd', jdRouter);
 app.use('/blueprints', blueprintRouter);
+app.use('/admin', adminRouter);
 app.use('/interviews', interviewRouter);
 app.use('/voices', voiceRouter);
 

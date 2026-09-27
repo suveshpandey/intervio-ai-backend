@@ -15,9 +15,7 @@ export const resetStore = {
 
   /** Return the userId for a token and immediately invalidate it (single use). */
   async consume(token: string): Promise<string | null> {
-    const k = key(token);
-    const userId = await redis.get(k);
-    if (userId) await redis.del(k);
-    return userId;
+    // getdel is atomic — a GET then DEL let two concurrent requests both win.
+    return redis.getdel(key(token));
   },
 };

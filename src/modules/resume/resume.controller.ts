@@ -5,7 +5,7 @@ import { badRequest, notFound } from '@/common/errors';
 import { param } from '@/common/http';
 import { logger } from '@/common/logger';
 import { putObject, deleteObject } from '@/storage/s3';
-import { ACCEPTED_MIME } from '@/modules/resume/text-extract';
+import { ACCEPTED_MIME, sniffFileType, MIME_FOR } from '@/modules/resume/text-extract';
 import { resumeRepository } from '@/modules/resume/resume.repository';
 import { claimRepository } from '@/modules/intelligence/claim.repository';
 import { enqueueParse } from '@/jobs/queue';
@@ -34,12 +34,19 @@ export const resumeController = {
     const file = req.file;
     if (!file) throw badRequest('No file uploaded', 'no_file');
 
-    const type = ACCEPTED_MIME[file.mimetype as keyof typeof ACCEPTED_MIME];
-    if (!type) throw badRequest('Only PDF and DOCX files are supported', 'bad_type');
+    const declared = ACCEPTED_MIME[file.mimetype as keyof typeof ACCEPTED_MIME];
+    if (!declared) throw badRequest('Only PDF and DOCX files are supported', 'bad_type');
+
+    // The header and the filename are both attacker-controlled — believe the bytes.
+    const actual = sniffFileType(file.buffer);
+    if (!actual || actual !== declared) {
+      throw badRequest('That file is not a valid PDF or DOCX', 'bad_type');
+    }
 
     const fileHash = createHash('sha256').update(file.buffer).digest('hex');
-    const key = `resumes/${userId}/${nanoid()}.${type}`;
-    await putObject(key, file.buffer, file.mimetype);
+    // The extension here is server-chosen, which is what the parse worker reads.
+    const key = `resumes/${userId}/${nanoid()}.${actual}`;
+    await putObject(key, file.buffer, MIME_FOR[actual]);
 
     const resume = await resumeRepository.create({
       userId,

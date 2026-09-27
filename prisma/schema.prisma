@@ -170,6 +170,35 @@ model Turn {
  * (modules/report/scoring.ts) and can be rebuilt from turns + evidence at any
  * time; only `narrative` is written by an LLM, after a safe-language check.
  */
+/**
+ * One metered call to a paid provider. Deliberately has NO foreign key to users:
+ * what an account cost stays on the books after that account is deleted.
+ */
+model UsageEvent {
+  id String @id @default(uuid())
+
+  userId      String? @map("user_id")
+  interviewId String? @map("interview_id")
+
+  kind     String // llm | stt | tts
+  provider String // euri | deepgram
+  model    String
+  task     String? // evaluate | question | plan | report | extract
+
+  inputTokens  Int   @default(0) @map("input_tokens")
+  outputTokens Int   @default(0) @map("output_tokens")
+  /** Seconds of audio for STT, characters for TTS. */
+  units        Float @default(0)
+  costUsd      Float @default(0) @map("cost_usd")
+  durationMs   Int   @default(0) @map("duration_ms")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([userId])
+  @@map("usage_events")
+}
+
 model Report {
   id          String @id @default(uuid())
   interviewId String @unique @map("interview_id")
