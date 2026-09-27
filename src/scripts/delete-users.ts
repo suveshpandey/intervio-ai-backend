@@ -1,49 +1,77 @@
 /**
- * Delete all users EXCEPT the ones you keep. Cascades to their resumes, JDs,
- * claims, blueprints, interviews, turns, and evidence (all onDelete: Cascade).
+ * Delete specific user accounts, completely: their resume files in S3, every
+ * session, and all their rows (resumes, claims, plans, interviews, turns,
+ * evidence, reports — all onDelete: Cascade).
  *
- * Dry-run by default (lists what would be deleted). Pass --yes to actually delete.
+ * Targets ONLY the emails you name. (The old version deleted everyone EXCEPT the
+ * named emails, which made a typo catastrophic, and it left files in S3.)
  *
- *   npm run users:delete                       # dry run, keeps the default
- *   npm run users:delete -- --yes              # delete for real
- *   npm run users:delete -- --keep a@x.com --keep b@x.com --yes
+ * Dry run by default — shows exactly what would go. Add --yes to delete.
+ *
+ *   npm run users:delete -- --email a@x.com --email b@x.com          # preview
+ *   npm run users:delete -- --email a@x.com --email b@x.com --yes    # delete
+ *
+ * Usage history (usage_events) is kept on purpose — spend stays on the books.
  */
 import { prisma } from '@/db/prisma';
+import { redis } from '@/db/redis';
+import { deleteObject } from '@/storage/s3';
+import { refreshStore } from '@/auth/refresh-store';
 
 async function main() {
   const args = process.argv.slice(2);
   const confirm = args.includes('--yes');
+  const emails = args
+    .flatMap((a, i) => (a === '--email' && args[i + 1] ? [args[i + 1]!.trim().toLowerCase()] : []))
+    .filter(Boolean);
 
-  // Emails to KEEP (case-insensitive). Defaults to the one the user asked to preserve.
-  const keep = args.reduce<string[]>((acc, a, i) => {
-    const next = args[i + 1];
-    if (a === '--keep' && next) acc.push(next.toLowerCase());
-    return acc;
-  }, []);
-  if (keep.length === 0) keep.push('suvesh1@gmail.com');
+  if (emails.length === 0) {
+    console.log('Name at least one account:  npm run users:delete -- --email someone@x.com');
+    process.exitCode = 1;
+    return;
+  }
 
-  const doomed = await prisma.user.findMany({
-    where: { email: { notIn: keep } },
-    select: { id: true, email: true, createdAt: true },
-    orderBy: { createdAt: 'asc' },
+  const users = await prisma.user.findMany({
+    where: { email: { in: emails, mode: 'insensitive' } },
+    select: {
+      id: true,
+      email: true,
+      resumes: { select: { fileUrl: true } },
+      _count: { select: { interviews: true, blueprints: true } },
+    },
   });
 
-  console.log(`\nKeeping: ${keep.join(', ')}`);
-  console.log(`Users to delete: ${doomed.length}`);
-  for (const u of doomed) console.log(`  - ${u.email}  (${u.id})`);
+  const found = new Set(users.map((u) => u.email.toLowerCase()));
+  const missing = emails.filter((e) => !found.has(e));
 
-  if (doomed.length === 0) {
-    console.log('\nNothing to delete.');
-    return;
+  console.log(`\nAccounts to delete: ${users.length}`);
+  for (const u of users) {
+    console.log(
+      `  - ${u.email}  ·  ${u.resumes.length} resume file(s), ${u._count.blueprints} plan(s), ${u._count.interviews} interview(s)`,
+    );
   }
+  if (missing.length) console.log(`\nNo account found for: ${missing.join(', ')}`);
+
+  if (users.length === 0) return;
 
   if (!confirm) {
-    console.log('\nDRY RUN — no changes made. Re-run with --yes to delete these users.\n');
+    console.log('\nDRY RUN — nothing deleted. Re-run with --yes to delete these accounts.\n');
     return;
   }
 
-  const { count } = await prisma.user.deleteMany({ where: { email: { notIn: keep } } });
-  console.log(`\n✅ Deleted ${count} user(s) and all their related data (cascade).\n`);
+  for (const u of users) {
+    // Files first: once the rows are gone we no longer know which objects were theirs.
+    const purged = await Promise.allSettled(u.resumes.map((r) => deleteObject(r.fileUrl)));
+    const failed = purged.filter((p) => p.status === 'rejected').length;
+
+    await refreshStore.removeAll(u.id);
+    await prisma.user.delete({ where: { id: u.id } });
+
+    console.log(
+      `✅ ${u.email} deleted — ${u.resumes.length - failed}/${u.resumes.length} files purged${failed ? ' (⚠️ some files failed to purge)' : ''}`,
+    );
+  }
+  console.log('');
 }
 
 main()
@@ -51,4 +79,7 @@ main()
     console.error('Failed:', err);
     process.exitCode = 1;
   })
-  .finally(() => prisma.$disconnect());
+  .finally(async () => {
+    await prisma.$disconnect();
+    redis.disconnect();
+  });

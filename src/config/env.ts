@@ -41,8 +41,12 @@ const schema = z.object({
   EURI_API_KEY: z.string().optional(),
   EURI_BASE_URL: z.string().url().default('https://api.euron.one/api/v1/euri'),
 
-  // Email — sent via AWS SES. Two supported transports (auto-selected):
-  //  • SMTP: set SMTP_USER / SMTP_PASS to your SES SMTP credentials, or
+  // Email. Two supported transports (auto-selected):
+  //  • SMTP: any SMTP server. Without a domain of your own, use Gmail:
+  //      SMTP_HOST=smtp.gmail.com  SMTP_PORT=465  SMTP_USER=<you>@gmail.com
+  //      SMTP_PASS=<Google app password>  EMAIL_FROM=<the same gmail address>
+  //    (SES + a @gmail.com sender fails Gmail's DMARC check and lands in spam,
+  //    and SES sandbox only delivers to pre-verified addresses.) Or SES SMTP creds.
   //  • SES API: uses SES_* keys if set (dedicated SES IAM user), else the AWS_* keys.
   EMAIL_ENABLED: z
     .enum(['true', 'false'])
