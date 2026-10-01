@@ -23,6 +23,10 @@ import {
   verdictFor,
 } from '@/modules/interview/engine/rules';
 import { storePrefetch, takePrefetch, clearPrefetch } from '@/modules/interview/engine/prefetch';
+import { detectRepeatRequest, type RepeatKind } from '@/modules/interview/engine/repeat-request';
+
+/** Times one question may be repeated or reworded before the engine moves on. */
+export const MAX_REPEATS = 2;
 import type {
   Decision,
   Difficulty,
@@ -162,9 +166,24 @@ export async function submitAnswer(
   const askedQuestion = state.pendingQuestion;
   const answeredTurnIdx = state.turnIdx;
 
+  // 0. "Sorry, can you repeat that?" — a short reply that is clearly asking about
+  //    the question. Handled instantly, with no model call and no scoring.
+  const quickAsk = detectRepeatRequest(answer);
+  if (quickAsk && (state.pendingRepeats ?? 0) < MAX_REPEATS) {
+    return askAgain(state, blueprint, sections, quickAsk, null, turnSeconds);
+  }
+
   // 1. Judge the answer (merged call also proposes the next question).
   const compact = await contextFor(state, blueprint, sections);
   const evaluation = await evaluateAnswer(compact, askedQuestion, answer);
+
+  // 1b. The model read it as a request about the question (a phrasing the fast
+  //     path didn't know). Re-ask instead of scoring it as a bad answer.
+  const modelAsk: RepeatKind | null =
+    evaluation.issue === 'repeat_request' ? 'repeat' : evaluation.issue === 'clarify_request' ? 'clarify' : null;
+  if (modelAsk && (state.pendingRepeats ?? 0) < MAX_REPEATS) {
+    return askAgain(state, blueprint, sections, modelAsk, evaluation.nextQuestion ?? null, turnSeconds);
+  }
 
   // 2. Advance the clocks.
   state.totalElapsedSec += turnSeconds;
@@ -321,6 +340,7 @@ async function issueQuestion(
 
   state.pendingQuestion = question;
   state.pendingTurnId = turn.id;
+  state.pendingRepeats = 0;
   state.askedQuestions.push(question);
 }
 
@@ -494,6 +514,80 @@ const BRIDGES = ['Got it.', 'Okay, thanks.', 'Alright.'];
 function bridged(question: string, evaluation: EvalResult, turnIdx: number): string {
   const lead = evaluation.issue === 'no_answer' ? 'No worries.' : BRIDGES[turnIdx % BRIDGES.length]!;
   return `${lead} ${question}`;
+}
+
+/* ─────────────── asked to repeat / clarify the question ─────────────── */
+
+/**
+ * Say the pending question again — verbatim if they didn't hear it, reworded if
+ * they didn't understand it.
+ *
+ * Deliberately NOT a turn: nothing is scored, no follow-up is spent, it can't
+ * count as a weak answer or as evidence against a claim, and turnIdx doesn't
+ * move (so a prefetched next-topic question stays valid). The clock DOES run —
+ * asking an interviewer to repeat themselves takes real time in a real interview.
+ */
+async function askAgain(
+  state: InterviewState,
+  blueprint: Blueprint,
+  sections: PlanSection[],
+  kind: RepeatKind,
+  suggested: string | null,
+  turnSeconds: number,
+): Promise<TurnResult> {
+  const original = state.pendingQuestion!;
+
+  state.totalElapsedSec += turnSeconds;
+  state.sectionElapsedSec += turnSeconds;
+  state.pendingRepeats = (state.pendingRepeats ?? 0) + 1;
+
+  let spoken = `Sure — ${original}`;
+
+  if (kind === 'clarify') {
+    const reworded = suggested?.trim() || (await rewordQuestion(state, blueprint, sections, original));
+    if (reworded && !isRepeat(reworded, [original])) {
+      // The model often opens with its own "No worries, …" — never say two.
+      spoken = OWN_LEAD_IN.test(reworded) ? reworded : `No problem, let me put it differently. ${reworded}`;
+      // Judge their next answer against the wording they actually heard, and
+      // keep the transcript honest about what was asked.
+      state.pendingQuestion = reworded;
+      state.askedQuestions.push(reworded);
+      await interviewRepository.updateQuestion(state.pendingTurnId!, reworded);
+    }
+  }
+
+  await stateStore.save(state);
+  logger.info(
+    { interviewId: state.interviewId, kind, repeats: state.pendingRepeats },
+    kind === 'repeat' ? 'candidate asked to repeat — re-asking' : 'candidate asked to clarify — rewording',
+  );
+
+  return {
+    interviewId: state.interviewId,
+    turnIdx: state.turnIdx,
+    question: spoken,
+    done: false,
+    sectionKey: sections[state.sectionIdx]?.key ?? 'unknown',
+  };
+}
+
+/** Openers that already do the job of our "No problem, let me put it differently." */
+const OWN_LEAD_IN = /^\s*(no problem|no worries|sure|okay|ok|alright|of course|let me|sorry|good question)\b/i;
+
+/** A simpler wording of the same question, for the fast path (no evaluation ran). */
+async function rewordQuestion(
+  state: InterviewState,
+  blueprint: Blueprint,
+  sections: PlanSection[],
+  question: string,
+): Promise<string | null> {
+  const compact = await contextFor(state, blueprint, sections);
+  const reworded = await generateQuestion(
+    compact,
+    'CLARIFY',
+    `The candidate didn't understand this question: "${question}". Ask the SAME thing again in simpler, plainer words. Do not change what it asks or move to a new topic. Start directly with the question — no apology or lead-in.`,
+  );
+  return isFallbackQuestion(reworded) ? null : reworded;
 }
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));

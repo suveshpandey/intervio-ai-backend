@@ -238,3 +238,15 @@ describe('predictMoveOn (prefetch target)', () => {
     expect(JSON.stringify(state)).toBe(before);
   });
 });
+
+describe('repeat / clarify requests reaching the engine', () => {
+  // The orchestrator re-asks while under the cap; decide() only sees one once
+  // the question has already been repeated, and must not loop a third time.
+  it('moves on instead of asking the same question yet again', () => {
+    for (const issue of ['repeat_request', 'clarify_request'] as const) {
+      const decision = run(makeState(), makeEval({ issue, actionSuggested: 'CLARIFY' }));
+      expect(decision.action, issue).toBe('MOVE_ON');
+      expect(decision.claimId, issue).toBe('c2');
+    }
+  });
+});

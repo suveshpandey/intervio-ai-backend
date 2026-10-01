@@ -15,7 +15,17 @@ export const ACTIONS = [
 ] as const;
 export type Action = (typeof ACTIONS)[number];
 
-export const ISSUES = ['generic', 'memorized', 'no_answer', 'off_topic', 'none'] as const;
+export const ISSUES = [
+  'generic',
+  'memorized',
+  'no_answer',
+  'off_topic',
+  /** Asked to hear the question again ("sorry, can you repeat that?"). */
+  'repeat_request',
+  /** Asked what the question means ("I don't understand the question"). */
+  'clarify_request',
+  'none',
+] as const;
 export type Issue = (typeof ISSUES)[number];
 
 /** How the answer bears on the claim being probed. */
@@ -82,6 +92,11 @@ export interface InterviewState {
   /** The question awaiting an answer (and its DB row). */
   pendingQuestion: string | null;
   pendingTurnId: string | null;
+  /**
+   * Times the candidate asked to hear / re-explain the pending question.
+   * Optional: states saved before this existed simply don't have it.
+   */
+  pendingRepeats?: number;
 }
 
 /** What the LLM returns after judging an answer. */

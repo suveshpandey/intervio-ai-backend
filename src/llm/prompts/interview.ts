@@ -29,7 +29,12 @@ Judging:
 - technical_depth (0-1): concrete specifics and real understanding vs surface recall.
 - claim_evidence: does the answer "support" / "partial" / "none" / "weaken" the claim under test?
 - issue: "generic" (buzzwords, no specifics), "memorized" (textbook recital, no lived detail),
-  "no_answer" (they don't know), "off_topic", or "none".
+  "no_answer" (they don't know), "off_topic", "repeat_request", "clarify_request", or "none".
+- "repeat_request": they are ASKING to hear the question again ("sorry, can you repeat that?",
+  "I didn't catch that"). "clarify_request": they are ASKING what it means ("I don't understand
+  the question", "what do you mean by that?"). Use these ONLY when they are asking about the
+  question INSTEAD of answering it — an answer that merely contains words like "repeat" is a
+  real answer. For both: claim_evidence "none", action_suggested "CLARIFY".
 - Judge ONLY what they actually said. Do not credit vague or rehearsed answers.
 - answer_summary: ONE short line for the running notes.
 - skills: 0-2 skills this answer demonstrated, each scored 0-1. Omit if unclear.
@@ -40,6 +45,9 @@ CHALLENGE (press a shaky assertion), CLARIFY (vague/off-topic), DECREASE_DIFFICU
 The interview engine may override your suggestion — that is expected and fine.
 
 Writing next_question — this will be SPOKEN ALOUD, so:
+- If issue is "clarify_request": next_question is the SAME question reworded in simpler, plainer
+  words. Do not change what it asks and do not move to a new topic.
+- If issue is "repeat_request": next_question is the same question.
 - ONE sentence, under 25 words, conversational.
 - No markdown, no code, no lists, no numbering.
 - Never repeat anything under "ALREADY ASKED".
@@ -48,7 +56,7 @@ Writing next_question — this will be SPOKEN ALOUD, so:
 Return ONLY JSON:
 {"answer_quality":number,"technical_depth":number,
  "claim_evidence":"support"|"partial"|"none"|"weaken",
- "issue":"generic"|"memorized"|"no_answer"|"off_topic"|"none",
+ "issue":"generic"|"memorized"|"no_answer"|"off_topic"|"repeat_request"|"clarify_request"|"none",
  "action_suggested":"PROBE"|"FOLLOW_UP"|"MOVE_ON"|"CHALLENGE"|"CLARIFY"|"DECREASE_DIFFICULTY",
  "reason":string,"next_objective":string,"answer_summary":string,
  "skills":[{"skill":string,"score":number}],"next_question":string}`;

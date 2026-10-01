@@ -53,6 +53,11 @@ export const interviewRepository = {
     return count > 0;
   },
 
+  /** A clarified question replaces the wording on its own turn, so the transcript matches what was said. */
+  async updateQuestion(turnId: string, questionText: string): Promise<void> {
+    await prisma.turn.update({ where: { id: turnId }, data: { questionText } });
+  },
+
   countAnswered(interviewId: string): Promise<number> {
     return prisma.turn.count({ where: { interviewId, answerTranscript: { not: null } } });
   },

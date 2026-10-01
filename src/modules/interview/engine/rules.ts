@@ -149,7 +149,13 @@ export function decide(input: DecideInput): Decision {
     };
   }
 
-  // 3. Two weak answers in a row — ease off before we lose them.
+  // 3. Still asking about the question after it was repeated — move on rather
+  //    than loop. (Under the cap, the orchestrator re-asks before we get here.)
+  if (evaluation.issue === 'repeat_request' || evaluation.issue === 'clarify_request') {
+    return moveOn(state, probeClaimIds, sections, 'Question already repeated — moving on.');
+  }
+
+  // 3b. Two weak answers in a row — ease off before we lose them.
   if (state.weakStreak >= WEAK_STREAK_LIMIT && state.difficulty !== 'easy') {
     return {
       action: 'DECREASE_DIFFICULTY',
