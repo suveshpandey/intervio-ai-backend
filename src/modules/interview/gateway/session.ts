@@ -7,9 +7,8 @@ import { deepgramTts } from '@/modules/voice/deepgram.tts';
 import { STT_SAMPLE_RATE, type SttStream, type TtsSession } from '@/modules/voice/types';
 import { stateStore } from '@/modules/interview/state.store';
 import { interviewRepository } from '@/modules/interview/interview.repository';
-import { submitAnswer } from '@/modules/interview/engine/orchestrator';
+import { submitAnswer, prepareTurn, type PreparedTurn } from '@/modules/interview/engine/orchestrator';
 import { clearPrefetch } from '@/modules/interview/engine/prefetch';
-import { warmFillers, pickFiller } from '@/modules/voice/fillers';
 import { usage } from '@/modules/usage/usage.repository';
 import { runWithContext } from '@/common/context';
 import { env } from '@/config/env';
@@ -29,15 +28,17 @@ function peakAmplitude(frame: Buffer): number {
 }
 
 /**
- * Share of turns that get a lead-in sound before the question. Not every turn:
- * an "Okay, got it." before every single question becomes a tic.
+ * How long a pause before we start scoring the answer in the background.
+ *
+ * This only starts THINKING early; it never ends the turn. The turn still
+ * commits on Deepgram's utterance end alone (see the note below) — an earlier
+ * second commit-trigger made the interview hang. Speculation that turns out
+ * wrong (they kept talking) is cancelled and costs one cheap model call.
  */
-const FILLER_CHANCE = 0.75;
+const SPECULATE_AFTER_MS = 600;
 
 /** Slack past the interview's own end before the socket is force-closed. */
 const SESSION_GRACE_MS = 2 * 60_000;
-/** ~200ms of 24kHz PCM16 per frame. */
-const AUDIO_CHUNK_BYTES = 9600;
 
 /**
  * Turn end is decided by Deepgram's `utterance_end_ms` alone (see deepgram.stt.ts).
@@ -82,9 +83,17 @@ export class VoiceSession {
   private windowPeak = 0;
   private keyterms: string[] = [];
   private reconnecting = false;
-  /** Last thinking sound, so the same one never plays twice in a row. */
-  private lastFiller: string | null = null;
   private lifetimeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Background scoring of the answer so far, started during a pause. */
+  private speculation: {
+    answer: string;
+    controller: AbortController;
+    result: Promise<PreparedTurn | null>;
+  } | null = null;
+  private speculateTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Last time the candidate said anything — the start of the silence they sit through. */
+  private lastSpeechAt = 0;
   /** Metering: audio streamed to Deepgram, and characters it spoke back. */
   private sttBytes = 0;
   private ttsChars = 0;
@@ -114,8 +123,6 @@ export class VoiceSession {
 
     // Prime STT with the candidate's own tech terms so jargon survives transcription.
     const keyterms = await this.loadBlueprint();
-    // Background: first interview with a voice pays ~10s once; later ones are instant.
-    warmFillers(this.voice);
 
     this.tts = await deepgramTts.openSession({ model: this.voice });
     this.keyterms = keyterms;
@@ -160,9 +167,16 @@ export class VoiceSession {
       onTranscript: ({ text, isFinal }) => {
         if (this.speaking) return; // ignore anything picked up while we talk
         this.send({ type: 'transcript', text, isFinal });
+        if (text.trim()) {
+          this.lastSpeechAt = Date.now();
+          // They're still talking: no point thinking about an unfinished answer.
+          this.cancelSpeculateTimer();
+        }
         if (isFinal) {
           this.answerParts.push(text);
           this.log.debug({ text: text.slice(0, 60) }, 'final transcript');
+          // A settled phrase: if they now stay quiet, start scoring in the background.
+          if (text.trim()) this.scheduleSpeculation();
         }
       },
       onUtteranceEnd: () => this.onUtteranceEnd(),
@@ -313,21 +327,11 @@ export class VoiceSession {
       // the one on screen are the same clock.
       const turnSeconds = this.takeClockSeconds();
 
-      // Lead-in sound, the instant the question exists: it plays from memory while
-      // the question's own audio is still being synthesised, so the two join up.
-      let fillerPlayed = false;
-      const result = await submitAnswer(this.ticket.userId, this.ticket.interviewId, answer, turnSeconds, {
-        onQuestionReady: (question) => {
-          if (this.closed || Math.random() >= FILLER_CHANCE) return false;
-          const filler = pickFiller(this.voice, answer, question, this.lastFiller);
-          if (!filler) return false;
-          this.sendAudio(filler.pcm);
-          this.lastFiller = filler.text;
-          fillerPlayed = true;
-          this.log.debug({ filler: filler.text }, 'filler played');
-          return true;
-        },
-      });
+      // Scored during their pause? Use it if it judged exactly this answer;
+      // otherwise it's discarded and the turn scores normally.
+      const prepared = await this.takeSpeculation(answer);
+
+      const result = await submitAnswer(this.ticket.userId, this.ticket.interviewId, answer, turnSeconds, prepared);
 
       const tEngine = Date.now() - tStart;
 
@@ -351,7 +355,10 @@ export class VoiceSession {
           engineMs: tEngine,
           // true = the next-topic question was written while they were answering.
           prefetched: result.debug?.prefetched ?? false,
-          filler: fillerPlayed,
+          // true = scored during the pause, so the model's time was hidden.
+          speculative: result.debug?.speculative ?? false,
+          // What the candidate actually sat through: their last word → our first sound.
+          silenceMs: this.lastSpeechAt ? tSpeakStart + firstByteMs - this.lastSpeechAt : null,
           ttsFirstByteMs: firstByteMs,
           ttsTotalMs: Date.now() - tSpeakStart,
           totalMs: Date.now() - tStart,
@@ -443,12 +450,62 @@ export class VoiceSession {
     });
   }
 
-  /** Raw PCM to the browser in frame-sized pieces (sent synchronously, so ordering is guaranteed). */
-  private sendAudio(pcm: Buffer): void {
-    if (this.ws.readyState !== this.ws.OPEN) return;
-    for (let i = 0; i < pcm.length; i += AUDIO_CHUNK_BYTES) {
-      this.ws.send(pcm.subarray(i, i + AUDIO_CHUNK_BYTES), { binary: true });
+  /* ── speculative scoring (start thinking during the pause) ── */
+
+  private cancelSpeculateTimer(): void {
+    if (this.speculateTimer) clearTimeout(this.speculateTimer);
+    this.speculateTimer = null;
+  }
+
+  private scheduleSpeculation(): void {
+    this.cancelSpeculateTimer();
+    this.speculateTimer = setTimeout(() => {
+      this.speculateTimer = null;
+      this.startSpeculation();
+    }, SPECULATE_AFTER_MS);
+  }
+
+  private startSpeculation(): void {
+    if (this.closed || this.speaking || this.busy || this.muted) return;
+    const answer = this.answerParts.join(' ').trim();
+    if (!answer) return;
+    if (this.speculation?.answer === answer) return; // already thinking about exactly this
+
+    // A longer answer replaces an older guess.
+    this.dropSpeculation();
+    const controller = new AbortController();
+    const result = prepareTurn(this.ticket.userId, this.ticket.interviewId, answer, controller.signal).catch(
+      () => null,
+    );
+    this.speculation = { answer, controller, result };
+    this.log.debug({ chars: answer.length }, 'speculative scoring started');
+  }
+
+  /** Cancel any in-flight speculation (they kept talking, or we're closing). */
+  private dropSpeculation(): void {
+    this.cancelSpeculateTimer();
+    if (!this.speculation) return;
+    this.speculation.controller.abort();
+    this.speculation = null;
+  }
+
+  /**
+   * At commit: the speculative result, if it scored this exact answer. Waits for
+   * it if it's still running — never slower than starting the call from scratch.
+   */
+  private async takeSpeculation(answer: string): Promise<PreparedTurn | null> {
+    this.cancelSpeculateTimer();
+    const spec = this.speculation;
+    this.speculation = null;
+    if (!spec) return null;
+    if (spec.answer !== answer) {
+      spec.controller.abort();
+      this.log.debug('speculation discarded — answer changed after it started');
+      return null;
     }
+    const prepared = await spec.result;
+    this.log.debug({ hit: Boolean(prepared) }, 'speculation used');
+    return prepared;
   }
 
   private send(msg: ServerMessage): void {
@@ -490,6 +547,7 @@ export class VoiceSession {
     if (this.closed) return;
     this.closed = true;
     if (this.lifetimeTimer) clearTimeout(this.lifetimeTimer);
+    this.dropSpeculation();
     this.meterAudio();
     this.stt?.close();
     this.tts?.close();

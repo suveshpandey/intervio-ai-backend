@@ -8,7 +8,7 @@ import { enqueueReport } from '@/jobs/queue';
 import { expireFinishedInterviews } from '@/modules/interview/expire';
 import { interviewRepository } from '@/modules/interview/interview.repository';
 import { buildCompactState } from '@/modules/interview/context/compact-state';
-import { evaluateAnswer } from '@/modules/interview/evaluation/evaluate';
+import { evaluateAnswer, tryEvaluateAnswer } from '@/modules/interview/evaluation/evaluate';
 import {
   generateQuestion,
   generateOpeningQuestion,
@@ -24,6 +24,7 @@ import {
 } from '@/modules/interview/engine/rules';
 import { storePrefetch, takePrefetch, clearPrefetch } from '@/modules/interview/engine/prefetch';
 import { detectRepeatRequest, type RepeatKind } from '@/modules/interview/engine/repeat-request';
+import { stripLeadIn } from '@/modules/interview/engine/lead-in';
 
 /** Times one question may be repeated or reworded before the engine moves on. */
 export const MAX_REPEATS = 2;
@@ -44,15 +45,6 @@ const MAX_SUMMARY = 6;
 const MAX_LAST_TURNS = 2;
 const MAX_OPEN_GAPS = 3;
 
-export interface TurnHooks {
-  /**
-   * Called the moment the next question text exists — the voice layer plays its
-   * lead-in sound here. Returns true if it did; the spoken "Got it." bridge is
-   * then dropped (it would say it twice).
-   */
-  onQuestionReady?: (question: string) => boolean;
-}
-
 export interface TurnResult {
   interviewId: string;
   turnIdx: number;
@@ -69,6 +61,8 @@ export interface TurnResult {
     difficulty: Difficulty;
     /** The question was prepared during the answer (no second LLM call). */
     prefetched: boolean;
+    /** The answer was scored during the candidate's pause (no wait for the model). */
+    speculative?: boolean;
   };
 }
 
@@ -139,12 +133,57 @@ export async function startInterview(userId: string, blueprintId: string): Promi
   };
 }
 
+/**
+ * An answer scored ahead of time — while the candidate was still pausing — tied
+ * to the exact answer text and question it judged.
+ */
+export interface PreparedTurn {
+  answer: string;
+  pendingTurnId: string;
+  pendingQuestion: string;
+  evaluation: EvalResult;
+}
+
+/**
+ * Score an answer WITHOUT committing anything (speculative path).
+ *
+ * Strictly read-only: no state, DB or clock changes, so the result can be thrown
+ * away if the candidate keeps talking. Returns null when there's nothing worth
+ * preparing (a "repeat that?" reply, no pending question) or the call failed or
+ * was cancelled — the real turn then scores normally.
+ */
+export async function prepareTurn(
+  userId: string,
+  interviewId: string,
+  answer: string,
+  signal?: AbortSignal,
+): Promise<PreparedTurn | null> {
+  if (detectRepeatRequest(answer)) return null; // handled instantly anyway
+
+  const interview = await interviewRepository.findById(interviewId, userId);
+  if (!interview || interview.status !== 'live') return null;
+  const state = await stateStore.load(interviewId);
+  if (!state?.pendingQuestion || !state.pendingTurnId) return null;
+
+  const compact = await contextFor(state, interview.blueprint, sectionsOf(interview.blueprint));
+  const evaluation = await tryEvaluateAnswer(compact, state.pendingQuestion, answer, signal);
+  if (!evaluation || signal?.aborted) return null;
+
+  return {
+    answer,
+    pendingTurnId: state.pendingTurnId,
+    pendingQuestion: state.pendingQuestion,
+    evaluation,
+  };
+}
+
 export async function submitAnswer(
   userId: string,
   interviewId: string,
   answer: string,
   turnSeconds: number = ESTIMATED_TURN_SECONDS,
-  hooks: TurnHooks = {},
+  /** Scoring done during the pause. Used only if it judged exactly this answer to exactly this question. */
+  prepared?: PreparedTurn | null,
 ): Promise<TurnResult> {
   const interview = await interviewRepository.findById(interviewId, userId);
   if (!interview) throw notFound('Interview not found');
@@ -173,9 +212,16 @@ export async function submitAnswer(
     return askAgain(state, blueprint, sections, quickAsk, null, turnSeconds);
   }
 
-  // 1. Judge the answer (merged call also proposes the next question).
-  const compact = await contextFor(state, blueprint, sections);
-  const evaluation = await evaluateAnswer(compact, askedQuestion, answer);
+  // 1. Judge the answer (merged call also proposes the next question) — unless it
+  //    was already judged during their pause, against this same answer and question.
+  const usablePrepared =
+    prepared &&
+    prepared.answer === answer &&
+    prepared.pendingTurnId === answeredTurnId &&
+    prepared.pendingQuestion === askedQuestion;
+  const evaluation = usablePrepared
+    ? prepared.evaluation
+    : await evaluateAnswer(await contextFor(state, blueprint, sections), askedQuestion, answer);
 
   // 1b. The model read it as a request about the question (a phrasing the fast
   //     path didn't know). Re-ask instead of scoring it as a bad answer.
@@ -248,21 +294,20 @@ export async function submitAnswer(
 
   // 8. Next question. A MOVE_ON we predicted was written while they talked;
   //    otherwise it's free from the merged call, or one more call on an override.
+  //    Spoken exactly as written, in one take — what's saved is what was said.
   const prefetched = await usablePrefetch(interviewId, answeredTurnIdx, decision, state);
   const question = prefetched ?? (await nextQuestion(state, blueprint, sections, decision, evaluation, movedSection));
-  const fillerPlayed = hooks.onQuestionReady?.(question) ?? false;
-  const spoken = prefetched && !fillerPlayed ? bridged(prefetched, evaluation, state.turnIdx) : question;
-  await issueQuestion(state, sections, spoken);
+  await issueQuestion(state, sections, question);
   await stateStore.save(state);
   prefetchMoveOn(state, blueprint, sections);
 
   return {
     interviewId,
     turnIdx: state.turnIdx,
-    question: spoken,
+    question,
     done: false,
     sectionKey: sections[state.sectionIdx]?.key ?? 'unknown',
-    debug: debugOf(decision, evaluation, state, Boolean(prefetched)),
+    debug: { ...debugOf(decision, evaluation, state, Boolean(prefetched)), speculative: Boolean(usablePrepared) },
   };
 }
 
@@ -475,7 +520,7 @@ function prefetchMoveOn(state: InterviewState, blueprint: Blueprint, sections: P
         : await generateQuestion(
             compact,
             'MOVE_ON',
-            `${move.objective}. This is a fresh topic: open it directly — no thanks or acknowledgement, and don't refer to earlier answers.`,
+            `${move.objective}. This is a fresh topic. Open with a short, natural transition into it in your own words (e.g. "Let's switch to your work on X —"), then ask. No thanks or praise, and don't refer to earlier answers.`,
           );
     // A canned line is not worth holding on to — let the real turn try again.
     return isFallbackQuestion(q) ? null : q;
@@ -505,16 +550,6 @@ async function usablePrefetch(
   return q;
 }
 
-const BRIDGES = ['Got it.', 'Okay, thanks.', 'Alright.'];
-
-/**
- * A prefetched question was written before the answer existed, so it can't react
- * to it. A short spoken bridge keeps the hand-off human instead of abrupt.
- */
-function bridged(question: string, evaluation: EvalResult, turnIdx: number): string {
-  const lead = evaluation.issue === 'no_answer' ? 'No worries.' : BRIDGES[turnIdx % BRIDGES.length]!;
-  return `${lead} ${question}`;
-}
 
 /* ─────────────── asked to repeat / clarify the question ─────────────── */
 
@@ -541,18 +576,22 @@ async function askAgain(
   state.sectionElapsedSec += turnSeconds;
   state.pendingRepeats = (state.pendingRepeats ?? 0) + 1;
 
-  let spoken = `Sure — ${original}`;
+  // The original opener ("Thanks — so…") reacted to their last answer; said
+  // again it's stale, so a repeat is just the question itself.
+  let spoken = `Sure — ${stripLeadIn(original)}`;
 
   if (kind === 'clarify') {
     const reworded = suggested?.trim() || (await rewordQuestion(state, blueprint, sections, original));
-    if (reworded && !isRepeat(reworded, [original])) {
-      // The model often opens with its own "No worries, …" — never say two.
-      spoken = OWN_LEAD_IN.test(reworded) ? reworded : `No problem, let me put it differently. ${reworded}`;
+    // Bare question: the model often opens with its own "No worries, …", and
+    // there should be exactly one lead-in — ours.
+    const bare = reworded ? stripLeadIn(reworded) : null;
+    if (bare && !isRepeat(bare, [original])) {
+      spoken = `No problem, let me put it differently. ${bare}`;
       // Judge their next answer against the wording they actually heard, and
       // keep the transcript honest about what was asked.
-      state.pendingQuestion = reworded;
-      state.askedQuestions.push(reworded);
-      await interviewRepository.updateQuestion(state.pendingTurnId!, reworded);
+      state.pendingQuestion = bare;
+      state.askedQuestions.push(bare);
+      await interviewRepository.updateQuestion(state.pendingTurnId!, bare);
     }
   }
 
@@ -570,9 +609,6 @@ async function askAgain(
     sectionKey: sections[state.sectionIdx]?.key ?? 'unknown',
   };
 }
-
-/** Openers that already do the job of our "No problem, let me put it differently." */
-const OWN_LEAD_IN = /^\s*(no problem|no worries|sure|okay|ok|alright|of course|let me|sorry|good question)\b/i;
 
 /** A simpler wording of the same question, for the fast path (no evaluation ran). */
 async function rewordQuestion(

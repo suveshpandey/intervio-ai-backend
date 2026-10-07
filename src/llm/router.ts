@@ -35,6 +35,9 @@ export async function chat(
       recordSuccess(primary);
       return result;
     } catch (err) {
+      // WE cancelled it (speculative scoring the candidate talked over). That
+      // says nothing about the model: don't trip its breaker, don't fall back.
+      if (opts.signal?.aborted) throw err;
       recordFailure(primary);
       logger.warn({ err, task, primary, fallback }, 'LLM primary failed — falling back');
     }
@@ -45,7 +48,7 @@ export async function chat(
     recordSuccess(fallback);
     return result;
   } catch (err) {
-    recordFailure(fallback);
+    if (!opts.signal?.aborted) recordFailure(fallback);
     throw err;
   }
 }

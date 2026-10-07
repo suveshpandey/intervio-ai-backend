@@ -14,16 +14,33 @@ export async function evaluateAnswer(
   question: string,
   answer: string,
 ): Promise<EvalResult> {
+  return (await tryEvaluateAnswer(compactState, question, answer)) ?? fallbackEval();
+}
+
+/**
+ * The same call, but honest about failure: null instead of the safe fallback.
+ *
+ * Used for speculative scoring during the candidate's pause. A cancelled or
+ * failed speculation must never be mistaken for a real judgement — the caller
+ * discards null and scores again for real.
+ */
+export async function tryEvaluateAnswer(
+  compactState: string,
+  question: string,
+  answer: string,
+  signal?: AbortSignal,
+): Promise<EvalResult | null> {
   try {
     const { data } = await completeJson(
       'evaluate',
       evalLlmSchema,
       evalPrompt(compactState, question, answer),
-      { maxTokens: 700 },
+      { maxTokens: 700, signal },
     );
     return toEvalResult(data);
   } catch (err) {
-    logger.error({ err }, 'Answer evaluation failed — using safe fallback');
-    return fallbackEval();
+    if (signal?.aborted) return null; // we cancelled it — not a failure
+    logger.error({ err }, 'Answer evaluation failed');
+    return null;
   }
 }
