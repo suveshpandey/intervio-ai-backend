@@ -22,6 +22,8 @@ export interface SttCallbacks {
   onTranscript(chunk: TranscriptChunk): void;
   /** Deepgram decided the speaker stopped — our primary turn-end signal. */
   onUtteranceEnd?(): void;
+  /** Deepgram's voice detector heard speech start (fires even when no words come back). */
+  onSpeechStarted?(): void;
   onError?(err: Error): void;
   onClose?(): void;
 }

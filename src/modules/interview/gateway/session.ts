@@ -11,6 +11,7 @@ import { submitAnswer, prepareTurn, type PreparedTurn } from '@/modules/intervie
 import { clearPrefetch } from '@/modules/interview/engine/prefetch';
 import { usage } from '@/modules/usage/usage.repository';
 import { runWithContext } from '@/common/context';
+import { DeafDetector, frameRms } from '@/modules/interview/gateway/deaf-detector';
 import { env } from '@/config/env';
 import { prisma } from '@/db/prisma';
 import type { PlanSection } from '@/modules/planner/schema';
@@ -36,6 +37,13 @@ function peakAmplitude(frame: Buffer): number {
  * wrong (they kept talking) is cancelled and costs one cheap model call.
  */
 const SPECULATE_AFTER_MS = 600;
+
+/** How often to check whether the speech stream has gone deaf. */
+const DEAF_CHECK_MS = 1000;
+/** Recoveries in a row that bring no words back before we ask them to check their setup. */
+const LOST_AFTER_FAILURES = 3;
+/** Audio kept while a stream is being replaced (~5s), so nothing said meanwhile is lost. */
+const MAX_BUFFERED_FRAMES = 50;
 
 /** Slack past the interview's own end before the socket is force-closed. */
 const SESSION_GRACE_MS = 2 * 60_000;
@@ -94,6 +102,14 @@ export class VoiceSession {
   private speculateTimer: ReturnType<typeof setTimeout> | null = null;
   /** Last time the candidate said anything — the start of the silence they sit through. */
   private lastSpeechAt = 0;
+
+  /** Notices a speech stream that hears a voice but returns no words (see deaf-detector.ts). */
+  private readonly deaf = new DeafDetector();
+  private deafTimer: ReturnType<typeof setInterval> | null = null;
+  /** Mic audio held while the speech stream is being replaced. */
+  private bufferedAudio: Buffer[] = [];
+  /** What the candidate has been told about how well we can hear them. */
+  private hearing: 'ok' | 'trouble' | 'lost' = 'ok';
   /** Metering: audio streamed to Deepgram, and characters it spoke back. */
   private sttBytes = 0;
   private ttsChars = 0;
@@ -132,6 +148,8 @@ export class VoiceSession {
       { voice: this.voice, keyterms: keyterms.length, pending: Boolean(state.pendingQuestion) },
       'voice session started',
     );
+    this.startDeafWatch();
+
     // Anchor the clock to the real start, so time spent away still counts.
     const startedAt = await interviewRepository.startedAt(this.ticket.interviewId);
     this.clockMark = (startedAt?.getTime() ?? Date.now()) + state.totalElapsedSec * 1000;
@@ -171,6 +189,9 @@ export class VoiceSession {
           this.lastSpeechAt = Date.now();
           // They're still talking: no point thinking about an unfinished answer.
           this.cancelSpeculateTimer();
+          // Words came back: the stream is hearing them.
+          this.deaf.onWords();
+          this.setHearing('ok');
         }
         if (isFinal) {
           this.answerParts.push(text);
@@ -180,6 +201,9 @@ export class VoiceSession {
         }
       },
       onUtteranceEnd: () => this.onUtteranceEnd(),
+      onSpeechStarted: () => {
+        if (this.isListening()) this.deaf.onSpeechStarted();
+      },
       onError: (err) => this.log.error({ err }, 'STT stream error'),
       onClose: () => void this.reopenStt(),
     });
@@ -196,6 +220,7 @@ export class VoiceSession {
     try {
       this.log.warn('STT stream closed — reconnecting');
       await this.openStt();
+      this.flushBufferedAudio();
       this.log.info('STT stream reconnected');
     } catch (err) {
       this.log.error({ err }, 'STT reconnect failed');
@@ -218,11 +243,15 @@ export class VoiceSession {
         this.droppedFrames++;
         return;
       }
-      if (this.stt && !this.stt.open) {
-        void this.reopenStt();
+      // Stream being replaced (deaf) or dropped by Deepgram: keep the audio and
+      // send it once the new stream is up, so words said meanwhile aren't lost.
+      if (this.reconnecting || (this.stt && !this.stt.open)) {
+        if (this.bufferedAudio.length < MAX_BUFFERED_FRAMES) this.bufferedAudio.push(data);
+        if (!this.reconnecting) void this.reopenStt();
         return;
       }
       this.micFrames++;
+      this.deaf.onAudio(frameRms(data), (data.length / 2 / STT_SAMPLE_RATE) * 1000);
       this.sttBytes += data.length;
       this.windowPeak = Math.max(this.windowPeak, peakAmplitude(data));
       // Periodic heartbeat: proves audio is still reaching STT during a silent hang.
@@ -450,6 +479,65 @@ export class VoiceSession {
     });
   }
 
+  /* ── deaf speech stream: notice it, replace it, tell the candidate ── */
+
+  /** The candidate is meant to be talking and we're sending their audio. */
+  private isListening(): boolean {
+    return !this.closed && !this.speaking && !this.busy && !this.muted && !this.reconnecting;
+  }
+
+  private startDeafWatch(): void {
+    this.deafTimer = setInterval(() => {
+      if (!this.isListening()) {
+        this.deaf.pause();
+        return;
+      }
+      if (this.deaf.shouldRecover()) void this.recoverDeafStt();
+    }, DEAF_CHECK_MS);
+    this.deafTimer.unref();
+  }
+
+  /**
+   * Swap a stream that hears a voice but returns no words for a fresh one.
+   * The new stream is opened BEFORE the old one is closed, and audio is buffered
+   * in between, so the candidate loses nothing. Words already heard are kept.
+   */
+  private async recoverDeafStt(): Promise<void> {
+    if (this.closed || this.reconnecting) return;
+    this.reconnecting = true;
+
+    const failures = this.deaf.consecutiveFailures;
+    // Recovery keeps failing: it's likely their environment, not our stream.
+    this.setHearing(failures >= LOST_AFTER_FAILURES ? 'lost' : 'trouble');
+    this.log.warn({ failures }, 'STT went deaf (speech heard, no words) — replacing stream');
+
+    const old = this.stt;
+    try {
+      await this.openStt();
+      old?.close(); // deliberate: doesn't trigger another reconnect
+      this.flushBufferedAudio();
+      this.log.info('STT stream replaced');
+    } catch (err) {
+      this.log.error({ err }, 'STT replace failed');
+      this.stt = old; // keep the old one rather than none at all
+    } finally {
+      this.reconnecting = false;
+    }
+  }
+
+  private flushBufferedAudio(): void {
+    const frames = this.bufferedAudio;
+    this.bufferedAudio = [];
+    for (const frame of frames) this.stt?.send(frame);
+  }
+
+  /** Tell the browser about hearing trouble — only on change, so it isn't spammed. */
+  private setHearing(status: 'ok' | 'trouble' | 'lost'): void {
+    if (this.hearing === status) return;
+    this.hearing = status;
+    this.send({ type: 'hearing', status });
+  }
+
   /* ── speculative scoring (start thinking during the pause) ── */
 
   private cancelSpeculateTimer(): void {
@@ -547,6 +635,8 @@ export class VoiceSession {
     if (this.closed) return;
     this.closed = true;
     if (this.lifetimeTimer) clearTimeout(this.lifetimeTimer);
+    if (this.deafTimer) clearInterval(this.deafTimer);
+    this.bufferedAudio = [];
     this.dropSpeculation();
     this.meterAudio();
     this.stt?.close();

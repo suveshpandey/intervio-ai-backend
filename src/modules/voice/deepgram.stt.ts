@@ -101,6 +101,7 @@ export const deepgramStt: SpeechToTextProvider = {
         opts.onUtteranceEnd?.();
       } else if (msg.type === 'SpeechStarted') {
         c.speechStarted++;
+        opts.onSpeechStarted?.();
       } else {
         logger.debug({ type: msg.type }, 'STT message');
       }
@@ -115,8 +116,13 @@ export const deepgramStt: SpeechToTextProvider = {
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'KeepAlive' }));
     }, KEEPALIVE_MS);
 
+    // Set when WE close it (replacing a deaf stream, or the session ending) —
+    // that must not look like Deepgram dropping us and trigger a reconnect.
+    let closedDeliberately = false;
+
     ws.on('close', (code: number, reason: Buffer) => {
       clearInterval(keepalive);
+      if (closedDeliberately) return;
       logger.warn({ code, reason: reason.toString().slice(0, 120) }, 'Deepgram STT socket closed');
       opts.onClose?.();
     });
@@ -138,6 +144,7 @@ export const deepgramStt: SpeechToTextProvider = {
         sendJson({ type: 'Finalize' });
       },
       close() {
+        closedDeliberately = true;
         clearInterval(keepalive);
         sendJson({ type: 'CloseStream' });
         ws.close();

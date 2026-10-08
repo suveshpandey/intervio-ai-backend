@@ -26,6 +26,12 @@ export type ServerMessage =
   | { type: 'question'; text: string; turnIdx: number; sectionKey: string }
   /** Audio for the current question is finished; the mic may reopen (half-duplex). */
   | { type: 'speech_end' }
+  /**
+   * How well we can hear the candidate. 'trouble' = their speech isn't coming
+   * through and we're reconnecting; 'lost' = it keeps failing, likely their mic or
+   * a noisy room; 'ok' = words are coming through again.
+   */
+  | { type: 'hearing'; status: 'ok' | 'trouble' | 'lost' }
   /** Progress for the header. */
   | { type: 'state'; sectionKey: string; turnIdx: number; secondsLeft: number }
   /** The engine is evaluating — lets the UI show a pause. */
