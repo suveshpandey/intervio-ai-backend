@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { prisma } from '@/db/prisma';
-import { USD_TO_INR, isEstimatedRate } from '@/config/pricing';
+import { isEstimatedRate } from '@/config/pricing';
+import { getUsdToInr } from './fx';
 
 /** Rows older than this aren't shown; the admin view is about what's happening now. */
 const WINDOW_DAYS = 30;
@@ -77,7 +78,7 @@ export const usageController = {
       : 0;
 
     res.json({
-      currency: { usdToInr: USD_TO_INR },
+      currency: await getUsdToInr(),
       windowDays: WINDOW_DAYS,
       totals: {
         allTimeUsd: totals._sum.costUsd ?? 0,
