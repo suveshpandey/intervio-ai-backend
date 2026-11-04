@@ -2,6 +2,7 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
+import { identifyDevice } from '@/common/device';
 import { pinoHttp } from 'pino-http';
 import { env, corsOrigins, emailEnabled, emailTransport } from '@/config/env';
 import { logger } from '@/common/logger';
@@ -34,6 +35,7 @@ app.use(cors({ origin: corsOrigins, credentials: true }));
 app.use(checkOrigin); // CORS alone doesn't stop body-less cross-site POSTs landing
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
+app.use(identifyDevice); // browser id + fingerprint, for the daily quotas
 // One concise line per request. The default dumps every header and cookie, which
 // buries the interview diagnostics we actually need while debugging a live call.
 app.use(

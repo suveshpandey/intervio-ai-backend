@@ -2,21 +2,13 @@ import { Router } from 'express';
 import { requireAuth } from '@/common/auth-guard';
 import { interviewController } from '@/modules/interview/interview.controller';
 import { rateLimit } from '@/common/rate-limit';
+import { requireQuota } from '@/common/quota';
 
 export const interviewRouter = Router();
 
 interviewRouter.use(requireAuth);
 interviewRouter.get('/', interviewController.list);
-interviewRouter.post(
-  '/',
-  rateLimit({
-    name: 'interview-start',
-    limit: 20,
-    windowSec: 24 * 60 * 60,
-    message: "You've started a lot of interviews today. Come back tomorrow.",
-  }),
-  interviewController.create,
-);
+interviewRouter.post('/', requireQuota('interview'), interviewController.create);
 interviewRouter.post(
   '/:id/answer',
   rateLimit({ name: 'answer', limit: 150, windowSec: 60 * 60 }),

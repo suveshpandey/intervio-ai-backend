@@ -32,7 +32,7 @@ export const blueprintConfigSchema = z.object({
   role: z.string().min(1).max(120),
   level: z.enum(LEVELS),
   difficulty: z.enum(DIFFICULTIES),
-  durationMin: z.number().int().min(5).max(60),
+  durationMin: z.number().int().min(5).max(30), // the app offers 10–30; the API must not allow more
   /** Interviewer voice (Deepgram model id) — validated against our curated list. */
   voice: z.enum(VOICE_IDS).default(DEFAULT_VOICE),
 });
