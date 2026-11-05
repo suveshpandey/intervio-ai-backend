@@ -1,6 +1,7 @@
 /**
  * Daily usage quotas for the costly actions: starting an interview, analysing a
- * resume, building an interview plan.
+ * resume. (Plans cost nothing now — they're built by rule, not an LLM — so they
+ * have no quota.)
  *
  * Each action is counted in several buckets over a rolling 24 hours, and is
  * refused when ANY of them is used up:
@@ -29,20 +30,18 @@ import { AppError } from '@/common/errors';
 import { logger } from '@/common/logger';
 import { byClientIp } from '@/common/rate-limit';
 
-export type QuotaName = 'interview' | 'resume' | 'plan';
+export type QuotaName = 'interview' | 'resume';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const LIMIT: Record<QuotaName, () => number> = {
   interview: () => env.DAILY_INTERVIEWS,
   resume: () => env.DAILY_RESUMES,
-  plan: () => env.DAILY_PLANS,
 };
 
 const NOUN: Record<QuotaName, [one: string, many: string]> = {
   interview: ['interview', 'interviews'],
   resume: ['resume analysis', 'resume analyses'],
-  plan: ['interview plan', 'interview plans'],
 };
 
 type Scope = 'account' | 'browser' | 'device' | 'network';

@@ -61,6 +61,11 @@ model Resume {
   // { skills: [...], projects: [...], experience: [...] }
   extracted Json?
 
+  // Interview targets for this resume, most recently used first: [{ role, level, difficulty,
+  // durationMin, voice, jdId? }]. One per role (e.g. "Software Engineer", "AI Engineer").
+  // "Start interview" builds its plan from the first, so there is no separate plan step.
+  targets Json?
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 

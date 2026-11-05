@@ -9,7 +9,9 @@ import { enqueueReport } from '@/jobs/queue';
 import { getOrCreateReport } from '@/modules/report/report.service';
 import { expireFinishedInterviews } from '@/modules/interview/expire';
 import { logger } from '@/common/logger';
-import { AppError } from '@/common/errors';
+import { AppError, notFound } from '@/common/errors';
+import { resumeRepository } from '@/modules/resume/resume.repository';
+import { buildBlueprint, targetFor } from '@/modules/planner/planner.service';
 import { isProd } from '@/config/env';
 import type { EvalResult } from '@/modules/interview/types';
 import {
@@ -19,7 +21,11 @@ import {
   ESTIMATED_TURN_SECONDS,
 } from '@/modules/interview/engine/orchestrator';
 
-const startInput = z.object({ blueprintId: z.string().uuid() });
+/** Start from a plan already built, or straight from a resume's saved target. */
+const startInput = z.union([
+  z.object({ blueprintId: z.string().uuid() }),
+  z.object({ resumeId: z.string().uuid() }),
+]);
 
 const answerInput = z.object({
   // A spoken answer transcript. Capped: it is untrusted text headed for an LLM.
@@ -31,9 +37,19 @@ const answerInput = z.object({
   turnSeconds: z.coerce.number().min(5).max(300).optional(),
 });
 
+/** One-click start: build the plan from the resume's saved target. */
+async function planFromResume(userId: string, resumeId: string): Promise<string> {
+  const resume = await resumeRepository.findById(resumeId, userId);
+  if (!resume) throw notFound('Resume not found');
+  const blueprint = await buildBlueprint(userId, { ...targetFor(resume), resumeId });
+  return blueprint.id;
+}
+
 export const interviewController = {
   async create(req: Request, res: Response) {
-    const { blueprintId } = startInput.parse(req.body);
+    const input = startInput.parse(req.body);
+    const blueprintId =
+      'blueprintId' in input ? input.blueprintId : await planFromResume(req.userId!, input.resumeId);
     const result = await startInterview(req.userId!, blueprintId);
     res.status(201).json(result);
   },

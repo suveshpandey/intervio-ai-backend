@@ -9,6 +9,8 @@ import { ACCEPTED_MIME, sniffFileType, MIME_FOR } from '@/modules/resume/text-ex
 import { resumeRepository } from '@/modules/resume/resume.repository';
 import { claimRepository } from '@/modules/intelligence/claim.repository';
 import { enqueueParse } from '@/jobs/queue';
+import { rememberTarget, targetsFor } from '@/modules/planner/planner.service';
+import { targetSchema } from '@/modules/planner/schema';
 
 function publicResume(r: {
   id: string;
@@ -16,6 +18,7 @@ function publicResume(r: {
   parseStatus: string;
   parseError: string | null;
   extracted: unknown;
+  targets: unknown;
   createdAt: Date;
 }) {
   return {
@@ -24,6 +27,7 @@ function publicResume(r: {
     parseStatus: r.parseStatus,
     parseError: r.parseError,
     extracted: r.extracted,
+    targets: targetsFor(r),
     createdAt: r.createdAt,
   };
 }
@@ -69,6 +73,18 @@ export const resumeController = {
     if (!resume) throw notFound('Resume not found');
     const claims = await claimRepository.listByResume(resume.id);
     res.json({ resume: publicResume(resume), claims });
+  },
+
+  /** Save the target for a role and make it the one used next; other roles stay remembered. */
+  async saveTarget(req: Request, res: Response) {
+    const resume = await resumeRepository.findById(param(req, 'id'), req.userId!);
+    if (!resume) throw notFound('Resume not found');
+    const target = targetSchema.parse(req.body);
+    const saved = await resumeRepository.setTargets(
+      resume.id,
+      rememberTarget(targetsFor(resume), target),
+    );
+    res.json({ resume: publicResume(saved) });
   },
 
   async remove(req: Request, res: Response) {

@@ -76,7 +76,6 @@ const schema = z.object({
    */
   DAILY_INTERVIEWS: z.coerce.number().int().min(0).default(3),
   DAILY_RESUMES: z.coerce.number().int().min(0).default(3),
-  DAILY_PLANS: z.coerce.number().int().min(0).default(3),
   /**
    * Per network (IP) ceiling for each of those actions. Deliberately high so
    * people sharing a wifi aren't blocked; it exists to stop scripts that shed

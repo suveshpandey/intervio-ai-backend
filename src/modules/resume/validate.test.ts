@@ -61,10 +61,12 @@ describe('looksLikeResume', () => {
   });
 
   it('rejects a short note even when it mentions a job', () => {
-    expect(looksLikeResume('Hi, I am a developer with experience in Node. Please interview me.').ok).toBe(false);
+    expect(
+      looksLikeResume('Hi, I am a developer with experience in Node. Please interview me.').ok,
+    ).toBe(false);
   });
 
-  it("keeps a resume that happens to be plain, with no fancy sections", () => {
+  it('keeps a resume that happens to be plain, with no fancy sections', () => {
     const plain = `ANITA DESAI
       Software developer, Pune. anita@example.com
 

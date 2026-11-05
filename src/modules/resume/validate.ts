@@ -28,7 +28,8 @@ export type ResumeCheck = { ok: true } | { ok: false; reason: string };
  * The message goes straight to the user, so it says what to do next rather than
  * what our checks are — knowing the thresholds only helps someone gaming them.
  */
-const REJECTION = "This doesn't look like a resume. Upload your CV as a PDF or DOCX with your experience, skills and projects.";
+const REJECTION =
+  "This doesn't look like a resume. Upload your CV as a PDF or DOCX with your experience, skills and projects.";
 
 export function looksLikeResume(text: string): ResumeCheck {
   const trimmed = text.trim();
@@ -70,7 +71,11 @@ export function extractionIsEmpty(extracted: {
   projects: unknown[];
   experience: unknown[];
 }): boolean {
-  return extracted.skills.length === 0 && extracted.projects.length === 0 && extracted.experience.length === 0;
+  return (
+    extracted.skills.length === 0 &&
+    extracted.projects.length === 0 &&
+    extracted.experience.length === 0
+  );
 }
 
 export const NOT_A_RESUME = REJECTION;

@@ -2,7 +2,13 @@ import { z } from 'zod';
 import { VOICE_IDS, DEFAULT_VOICE } from '@/modules/voice/voices';
 
 // ── Fixed interview shape (order matters; the engine walks these in sequence) ──
-export const SECTION_KEYS = ['intro', 'claim_verification', 'fundamentals', 'problem_solving', 'wrap'] as const;
+export const SECTION_KEYS = [
+  'intro',
+  'claim_verification',
+  'fundamentals',
+  'problem_solving',
+  'wrap',
+] as const;
 export type SectionKey = (typeof SECTION_KEYS)[number];
 
 export const SECTION_TITLES: Record<SectionKey, string> = {
@@ -38,13 +44,9 @@ export const blueprintConfigSchema = z.object({
 });
 export type BlueprintConfig = z.infer<typeof blueprintConfigSchema>;
 
-/** Raw LLM planner output — loose on purpose; our code validates and fixes it. */
-export const planLlmSchema = z.object({
-  probeClaimIds: z.array(z.string()).default([]),
-  sections: z
-    .array(z.object({ key: z.string(), budgetMin: z.number() }))
-    .default([]),
-});
+/** The target saved on a resume: everything in the config except which resume it is. */
+export const targetSchema = blueprintConfigSchema.omit({ resumeId: true });
+export type InterviewTarget = z.infer<typeof targetSchema>;
 
 /** The validated, stored section shape. */
 export interface PlanSection {
