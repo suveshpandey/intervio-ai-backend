@@ -13,14 +13,18 @@ import type { NextFunction, Request, Response } from 'express';
 import { redis } from '@/db/redis';
 import { AppError } from '@/common/errors';
 import { logger } from '@/common/logger';
+import { env, isProd } from '@/config/env';
 
 export interface RateLimitOptions {
   /** Short name; also the Redis key prefix. */
   name: string;
   limit: number;
   windowSec: number;
-  /** What to count per. Defaults to the signed-in user, falling back to IP. */
-  by?: (req: Request) => string;
+  /**
+   * What to count per. Defaults to the signed-in user, falling back to IP.
+   * Returning null skips the limit for this request (see byClientIp).
+   */
+  by?: (req: Request) => string | null;
   /** Shown to the user when they hit the cap. */
   message?: string;
 }
@@ -28,8 +32,14 @@ export interface RateLimitOptions {
 const identify = (req: Request): string => req.userId ?? req.ip ?? 'unknown';
 
 export function rateLimit({ name, limit, windowSec, by = identify, message }: RateLimitOptions) {
-  return async function rateLimiter(req: Request, res: Response, next: NextFunction): Promise<void> {
-    const key = `rl:${name}:${by(req)}`;
+  return async function rateLimiter(
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    const id = by(req);
+    if (id === null) return next();
+    const key = `rl:${name}:${id}`;
 
     try {
       const count = await redis.incr(key);
@@ -40,7 +50,7 @@ export function rateLimit({ name, limit, windowSec, by = identify, message }: Ra
         const ttl = await redis.ttl(key);
         const retryAfter = ttl > 0 ? ttl : windowSec;
         res.setHeader('Retry-After', String(retryAfter));
-        logger.warn({ name, id: by(req), count }, 'rate limit hit');
+        logger.warn({ name, id, count }, 'rate limit hit');
         throw new AppError(
           429,
           message ?? `Too many requests. Try again in ${Math.ceil(retryAfter / 60)} minute(s).`,
@@ -65,4 +75,24 @@ export function rateLimit({ name, limit, windowSec, by = identify, message }: Ra
 export const byIpAndEmail = (req: Request): string => {
   const email = typeof req.body?.email === 'string' ? req.body.email.toLowerCase().trim() : '';
   return `${req.ip ?? 'unknown'}:${email}`;
+};
+
+/**
+ * Count per client network, for limits that must hold across accounts.
+ *
+ * Behind a proxy (Render) req.ip is only the real client when TRUST_PROXY_HOPS
+ * is set; otherwise every user shares the proxy's address and one shared counter
+ * would lock everybody out. So in production without it, IP-only limits stand
+ * down (and say so once) rather than block the whole service.
+ */
+let warnedNoProxy = false;
+export const byClientIp = (req: Request): string | null => {
+  if (isProd && env.TRUST_PROXY_HOPS === 0) {
+    if (!warnedNoProxy) {
+      warnedNoProxy = true;
+      logger.warn('TRUST_PROXY_HOPS is 0 in production — per-IP limits are disabled');
+    }
+    return null;
+  }
+  return req.ip ?? 'unknown';
 };

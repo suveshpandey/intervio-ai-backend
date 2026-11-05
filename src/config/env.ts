@@ -69,6 +69,27 @@ const schema = z.object({
   DEEPGRAM_STT_MODEL: z.string().default('nova-3'),
   DEEPGRAM_TTS_MODEL: z.string().default('flux-marcus-en'),
 
+  /**
+   * Daily allowances per person (rolling 24h), counted per account, per browser
+   * (cookie) and per device fingerprint, so a fresh signup in the same browser
+   * doesn't get a fresh allowance. 0 = unlimited. See common/quota.ts.
+   */
+  DAILY_INTERVIEWS: z.coerce.number().int().min(0).default(3),
+  DAILY_RESUMES: z.coerce.number().int().min(0).default(3),
+  DAILY_PLANS: z.coerce.number().int().min(0).default(3),
+  /**
+   * Per network (IP) ceiling for each of those actions. Deliberately high so
+   * people sharing a wifi aren't blocked; it exists to stop scripts that shed
+   * cookies and fake fingerprints. 0 = no ceiling.
+   */
+  QUOTA_IP_CEILING: z.coerce.number().int().min(0).default(20),
+  /**
+   * Emergency brake for the whole service: once today's metered spend (UTC day)
+   * passes this many dollars, new interviews / plans / uploads are refused;
+   * running interviews carry on. 0 (default) = off.
+   */
+  DAILY_SPEND_LIMIT_USD: z.coerce.number().min(0).default(0),
+
   // Public base URL of the frontend — used to build links in emails.
   APP_URL: z.string().url().default('http://localhost:3000'),
 });

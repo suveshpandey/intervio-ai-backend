@@ -9,6 +9,8 @@ import { enqueueReport } from '@/jobs/queue';
 import { getOrCreateReport } from '@/modules/report/report.service';
 import { expireFinishedInterviews } from '@/modules/interview/expire';
 import { logger } from '@/common/logger';
+import { AppError } from '@/common/errors';
+import { isProd } from '@/config/env';
 import type { EvalResult } from '@/modules/interview/types';
 import {
   startInterview,
@@ -36,7 +38,9 @@ export const interviewController = {
     res.status(201).json(result);
   },
 
+  /** Typed answers are a dev/test path only; the product is voice (PRD §4). */
   async answer(req: Request, res: Response) {
+    if (isProd) throw new AppError(403, 'Answers are given by voice.', 'voice_only');
     const { answer, turnSeconds } = answerInput.parse(req.body);
     const result = await submitAnswer(
       req.userId!,

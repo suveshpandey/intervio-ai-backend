@@ -5,7 +5,9 @@ ENV NODE_ENV=production
 
 # Install deps (including prisma CLI, needed for `prisma generate` + migrations).
 COPY package.json package-lock.json* ./
-RUN npm ci
+# --include=dev: the app runs TS via tsx and generates its client with the prisma
+# CLI — both devDependencies, which NODE_ENV=production would otherwise skip.
+RUN npm ci --include=dev
 
 # App source + generated Prisma client.
 COPY . .

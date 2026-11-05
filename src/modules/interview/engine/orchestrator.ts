@@ -25,6 +25,7 @@ import {
 import { storePrefetch, takePrefetch, clearPrefetch } from '@/modules/interview/engine/prefetch';
 import { detectRepeatRequest, type RepeatKind } from '@/modules/interview/engine/repeat-request';
 import { stripLeadIn } from '@/modules/interview/engine/lead-in';
+import { assertDailyBudget } from '@/modules/usage/guards';
 
 /** Times one question may be repeated or reworded before the engine moves on. */
 export const MAX_REPEATS = 2;
@@ -88,6 +89,9 @@ export async function startInterview(userId: string, blueprintId: string): Promi
       'interview_in_progress',
     );
   }
+
+  // Service-wide emergency brake (off unless DAILY_SPEND_LIMIT_USD is set).
+  await assertDailyBudget();
 
   const interview = await interviewRepository.create(userId, blueprint.id);
 
