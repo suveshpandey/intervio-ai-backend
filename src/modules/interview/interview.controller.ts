@@ -11,7 +11,7 @@ import { expireFinishedInterviews } from '@/modules/interview/expire';
 import { logger } from '@/common/logger';
 import { AppError, notFound } from '@/common/errors';
 import { resumeRepository } from '@/modules/resume/resume.repository';
-import { buildBlueprint, targetFor } from '@/modules/planner/planner.service';
+import { buildBlueprint, targetsWithHistory } from '@/modules/planner/planner.service';
 import { isProd } from '@/config/env';
 import type { EvalResult } from '@/modules/interview/types';
 import {
@@ -41,7 +41,10 @@ const answerInput = z.object({
 async function planFromResume(userId: string, resumeId: string): Promise<string> {
   const resume = await resumeRepository.findById(resumeId, userId);
   if (!resume) throw notFound('Resume not found');
-  const blueprint = await buildBlueprint(userId, { ...targetFor(resume), resumeId });
+  const blueprint = await buildBlueprint(userId, {
+    ...(await targetsWithHistory(resume))[0]!,
+    resumeId,
+  });
   return blueprint.id;
 }
 
@@ -49,7 +52,9 @@ export const interviewController = {
   async create(req: Request, res: Response) {
     const input = startInput.parse(req.body);
     const blueprintId =
-      'blueprintId' in input ? input.blueprintId : await planFromResume(req.userId!, input.resumeId);
+      'blueprintId' in input
+        ? input.blueprintId
+        : await planFromResume(req.userId!, input.resumeId);
     const result = await startInterview(req.userId!, blueprintId);
     res.status(201).json(result);
   },
@@ -139,7 +144,9 @@ export const interviewController = {
         turnCount: r._count.turns,
         verdict: r.report?.verdict ?? null,
         // Headline numbers for the dashboard, straight from the saved report.
-        claims: r.report ? (r.report.stats as { claimsSupported: number; claimsProbed: number }) : null,
+        claims: r.report
+          ? (r.report.stats as { claimsSupported: number; claimsProbed: number })
+          : null,
       })),
     });
   },

@@ -182,6 +182,40 @@ export function targetsFor(resume: { extracted: unknown; targets: unknown }): In
   return saved.success && saved.data.length > 0 ? saved.data : [defaultTarget(resume)];
 }
 
+/**
+ * Saved targets plus every role this resume has actually been planned for, most
+ * recent first. Roles used before the list existed (or never saved) still show up.
+ */
+export async function targetsWithHistory(resume: {
+  id: string;
+  extracted: unknown;
+  targets: unknown;
+}): Promise<InterviewTarget[]> {
+  const saved = z.array(targetSchema).safeParse(resume.targets);
+  const list: InterviewTarget[] = saved.success ? [...saved.data] : [];
+
+  const past = await prisma.blueprint.findMany({
+    where: { resumeId: resume.id },
+    orderBy: { createdAt: 'desc' },
+    select: {
+      role: true,
+      level: true,
+      difficulty: true,
+      durationMin: true,
+      voice: true,
+      jdId: true,
+    },
+    take: 50,
+  });
+  for (const b of past) {
+    const known = list.some((t) => t.role.trim().toLowerCase() === b.role.trim().toLowerCase());
+    if (known) continue;
+    const t = targetSchema.safeParse({ ...b, jdId: b.jdId ?? undefined });
+    if (t.success) list.push(t.data);
+  }
+  return list.length > 0 ? list.slice(0, MAX_TARGETS) : [defaultTarget(resume)];
+}
+
 /** The target "Start interview" uses: the one used last. */
 export function targetFor(resume: { extracted: unknown; targets: unknown }): InterviewTarget {
   return targetsFor(resume)[0]!;
