@@ -23,6 +23,16 @@ vi.mock('@/db/redis', () => {
   };
 });
 
+const emails: Record<string, string> = { boss: 'boss@example.com', you: 'you@example.com' };
+vi.mock('@/db/user.repository', () => ({
+  userRepository: {
+    findById: async (id: string) => (emails[id] ? { id, email: emails[id] } : null),
+  },
+}));
+vi.mock('@/common/admin-guard', () => ({
+  isAdminEmail: (email: string) => email === 'boss@example.com',
+}));
+
 const { requireQuota } = await import('@/common/quota');
 
 const WIFI = '10.0.0.1';
@@ -88,5 +98,16 @@ describe('daily quota', () => {
       res.emit('finish');
     }
     expect(await start('you', 'd1', 'fp1')).toBe('ok');
+  });
+
+  it('an admin is never limited and never counted', async () => {
+    for (let i = 0; i < 10; i++) expect(await start('boss', 'd9', 'fp9')).toBe('ok');
+    expect(store.size).toBe(0);
+  });
+
+  it('a non-admin on the same browser as an admin is still limited', async () => {
+    for (let i = 0; i < 5; i++) await start('boss', 'd1', 'fp1');
+    for (let i = 0; i < 3; i++) expect(await start('you', 'd1', 'fp1')).toBe('ok');
+    expect(await start('you', 'd1', 'fp1')).toMatch(/You've used today's 3 interviews/);
   });
 });
