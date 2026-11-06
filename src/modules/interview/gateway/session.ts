@@ -7,7 +7,11 @@ import { deepgramTts } from '@/modules/voice/deepgram.tts';
 import { STT_SAMPLE_RATE, type SttStream, type TtsSession } from '@/modules/voice/types';
 import { stateStore } from '@/modules/interview/state.store';
 import { interviewRepository } from '@/modules/interview/interview.repository';
-import { submitAnswer, prepareTurn, type PreparedTurn } from '@/modules/interview/engine/orchestrator';
+import {
+  submitAnswer,
+  prepareTurn,
+  type PreparedTurn,
+} from '@/modules/interview/engine/orchestrator';
 import { clearPrefetch } from '@/modules/interview/engine/prefetch';
 import { usage } from '@/modules/usage/usage.repository';
 import { runWithContext } from '@/common/context';
@@ -137,6 +141,19 @@ export class VoiceSession {
       return;
     }
 
+    // Entering the room starts the clock (first time) or marks a rejoin. A finished or
+    // never-started interview can't be joined.
+    const startedAt = await interviewRepository.markJoined(this.ticket.interviewId);
+    if (!startedAt) {
+      this.send({
+        type: 'error',
+        code: 'not_live',
+        message: "This interview has ended or wasn't started in time.",
+      });
+      this.ws.close();
+      return;
+    }
+
     // Prime STT with the candidate's own tech terms so jargon survives transcription.
     const keyterms = await this.loadBlueprint();
 
@@ -151,17 +168,19 @@ export class VoiceSession {
     this.startDeafWatch();
 
     // Anchor the clock to the real start, so time spent away still counts.
-    const startedAt = await interviewRepository.startedAt(this.ticket.interviewId);
-    this.clockMark = (startedAt?.getTime() ?? Date.now()) + state.totalElapsedSec * 1000;
+    this.clockMark = startedAt.getTime() + state.totalElapsedSec * 1000;
 
     // Hard stop: two paid Deepgram streams must not outlive the interview itself,
     // however quiet the client goes.
     const endsInMs =
-      (startedAt?.getTime() ?? Date.now()) + this.durationMin * 60_000 + SESSION_GRACE_MS - Date.now();
-    this.lifetimeTimer = setTimeout(() => {
-      this.log.info('voice session hit its time limit — closing');
-      this.close();
-    }, Math.max(60_000, endsInMs));
+      startedAt.getTime() + this.durationMin * 60_000 + SESSION_GRACE_MS - Date.now();
+    this.lifetimeTimer = setTimeout(
+      () => {
+        this.log.info('voice session hit its time limit — closing');
+        this.close();
+      },
+      Math.max(60_000, endsInMs),
+    );
     this.lifetimeTimer.unref();
     this.sendState(state);
 
@@ -280,7 +299,10 @@ export class VoiceSession {
     try {
       const parsed = clientMessageSchema.safeParse(JSON.parse(data.toString()));
       if (!parsed.success) {
-        this.log.warn({ issues: parsed.error.issues.slice(0, 2) }, 'ignored malformed client message');
+        this.log.warn(
+          { issues: parsed.error.issues.slice(0, 2) },
+          'ignored malformed client message',
+        );
         return;
       }
       msg = parsed.data;
@@ -337,8 +359,9 @@ export class VoiceSession {
 
   private finishTurn(answer: string): Promise<void> {
     // A turn is not an HTTP request, so nothing has set the work context yet.
-    return runWithContext({ userId: this.ticket.userId, interviewId: this.ticket.interviewId }, () =>
-      this.runTurn(answer),
+    return runWithContext(
+      { userId: this.ticket.userId, interviewId: this.ticket.interviewId },
+      () => this.runTurn(answer),
     );
   }
 
@@ -360,7 +383,13 @@ export class VoiceSession {
       // otherwise it's discarded and the turn scores normally.
       const prepared = await this.takeSpeculation(answer);
 
-      const result = await submitAnswer(this.ticket.userId, this.ticket.interviewId, answer, turnSeconds, prepared);
+      const result = await submitAnswer(
+        this.ticket.userId,
+        this.ticket.interviewId,
+        answer,
+        turnSeconds,
+        prepared,
+      );
 
       const tEngine = Date.now() - tStart;
 
@@ -562,9 +591,12 @@ export class VoiceSession {
     // A longer answer replaces an older guess.
     this.dropSpeculation();
     const controller = new AbortController();
-    const result = prepareTurn(this.ticket.userId, this.ticket.interviewId, answer, controller.signal).catch(
-      () => null,
-    );
+    const result = prepareTurn(
+      this.ticket.userId,
+      this.ticket.interviewId,
+      answer,
+      controller.signal,
+    ).catch(() => null);
     this.speculation = { answer, controller, result };
     this.log.debug({ chars: answer.length }, 'speculative scoring started');
   }

@@ -45,7 +45,10 @@ async function start(
   ip = WIFI,
 ): Promise<string> {
   const req = { userId, deviceId, fingerprint, ip } as unknown as Request;
-  const res = Object.assign(new EventEmitter(), { statusCode: 201 }) as unknown as Response;
+  const res = Object.assign(new EventEmitter(), {
+    statusCode: 201,
+    locals: {},
+  }) as unknown as Response;
   let error: Error | undefined;
   await requireQuota('interview')(req, res, (err?: unknown) => {
     error = err as Error | undefined;
@@ -93,7 +96,10 @@ describe('daily quota', () => {
       ip: WIFI,
     } as unknown as Request;
     for (let i = 0; i < 5; i++) {
-      const res = Object.assign(new EventEmitter(), { statusCode: 500 }) as unknown as Response;
+      const res = Object.assign(new EventEmitter(), {
+        statusCode: 500,
+        locals: {},
+      }) as unknown as Response;
       await requireQuota('interview')(req, res, () => undefined);
       res.emit('finish');
     }
@@ -109,5 +115,24 @@ describe('daily quota', () => {
     for (let i = 0; i < 5; i++) await start('boss', 'd1', 'fp1');
     for (let i = 0; i < 3; i++) expect(await start('you', 'd1', 'fp1')).toBe('ok');
     expect(await start('you', 'd1', 'fp1')).toMatch(/You've used today's 3 interviews/);
+  });
+
+  it('a response marked quotaFree (going back into a waiting interview) is not counted', async () => {
+    const req = {
+      userId: 'you',
+      deviceId: 'd1',
+      fingerprint: 'fp1',
+      ip: WIFI,
+    } as unknown as Request;
+    for (let i = 0; i < 5; i++) {
+      const res = Object.assign(new EventEmitter(), {
+        statusCode: 200,
+        locals: { quotaFree: true },
+      }) as unknown as Response;
+      await requireQuota('interview')(req, res, () => undefined);
+      res.emit('finish');
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    for (let i = 0; i < 3; i++) expect(await start('you', 'd1', 'fp1')).toBe('ok');
   });
 });

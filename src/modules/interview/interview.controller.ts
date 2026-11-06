@@ -9,6 +9,7 @@ import { enqueueReport } from '@/jobs/queue';
 import { getOrCreateReport } from '@/modules/report/report.service';
 import { expireFinishedInterviews } from '@/modules/interview/expire';
 import { logger } from '@/common/logger';
+import { returnBy } from '@/modules/interview/lifecycle';
 import { AppError, notFound } from '@/common/errors';
 import { resumeRepository } from '@/modules/resume/resume.repository';
 import { buildBlueprint, targetsWithHistory } from '@/modules/planner/planner.service';
@@ -56,6 +57,12 @@ export const interviewController = {
         ? input.blueprintId
         : await planFromResume(req.userId!, input.resumeId);
     const result = await startInterview(req.userId!, blueprintId);
+    if (result.reused) {
+      // Going back into the interview that was waiting isn't a new use of the daily limit.
+      res.locals.quotaFree = true;
+      res.status(200).json(result);
+      return;
+    }
     res.status(201).json(result);
   },
 
@@ -141,6 +148,14 @@ export const interviewController = {
         createdAt: r.createdAt,
         startedAt: r.startedAt,
         endedAt: r.endedAt,
+        // When it will be closed if you don't come back (join / rejoin deadline), else null.
+        returnBy: returnBy({
+          status: r.status,
+          createdAt: r.createdAt,
+          startedAt: r.startedAt,
+          lastLeftAt: r.lastLeftAt,
+          durationMin: r.blueprint.durationMin,
+        }),
         turnCount: r._count.turns,
         verdict: r.report?.verdict ?? null,
         // Headline numbers for the dashboard, straight from the saved report.

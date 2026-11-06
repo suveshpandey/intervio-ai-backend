@@ -137,7 +137,8 @@ export function requireQuota(name: QuotaName) {
     }
 
     res.on('finish', () => {
-      if (res.statusCode >= 200 && res.statusCode < 300) {
+      // `quotaFree`: the route handed back something already counted (e.g. a waiting interview).
+      if (res.statusCode >= 200 && res.statusCode < 300 && !res.locals.quotaFree) {
         recordUse(name, req).catch((err: unknown) =>
           logger.error({ err, quota: name }, 'failed to record quota use'),
         );
