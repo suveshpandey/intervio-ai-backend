@@ -142,6 +142,7 @@ export const interviewController = {
       interviews: rows.map((r) => ({
         id: r.id,
         status: r.status,
+        resumeId: r.blueprint.resumeId,
         role: r.blueprint.role,
         level: r.blueprint.level,
         durationMin: r.blueprint.durationMin,
