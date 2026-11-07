@@ -1,73 +1,45 @@
 import type { Request, Response } from 'express';
+import { z } from 'zod';
 import { prisma } from '@/db/prisma';
 import { isEstimatedRate } from '@/config/pricing';
 import { getUsdToInr } from './fx';
 
-/** Rows older than this aren't shown; the admin view is about what's happening now. */
-const WINDOW_DAYS = 30;
-
-const since = (days: number) => new Date(Date.now() - days * 86_400_000);
-
 /** Shown in this order; any other provider that appears in the data is appended. */
 const KNOWN_PROVIDERS = ['euri', 'deepgram'] as const;
 
-interface Period {
-  usd: number;
-  calls: number;
-}
-
-const emptyPeriod = (): Period => ({ usd: 0, calls: 0 });
+/**
+ * The window to report on. The browser sends it, already worked out in the
+ * admin's own timezone ("today" is their midnight, not the server's). Omitted =
+ * all time.
+ */
+const rangeQuery = z.object({
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+});
 
 export const usageController = {
   /**
-   * Everything the admin page needs, in one request: overall totals, a per-day
-   * series, spend split by provider (euri = LLM, deepgram = voice) with each
-   * provider's own models and steps, live-turn latency, and the biggest
-   * spenders. All computed in SQL — there can be a lot of rows.
+   * Everything the admin page needs for one time window: totals, spend per
+   * provider with its models and steps, a per-day series, live-turn latency, and
+   * the biggest spenders. All computed in SQL — there can be a lot of rows.
    */
-  async summary(_req: Request, res: Response) {
-    const from = since(WINDOW_DAYS);
-    const dayAgo = since(1);
-    const weekAgo = since(7);
+  async summary(req: Request, res: Response) {
+    const q = rangeQuery.parse(req.query);
+    const from = q.from ?? new Date(0);
+    const to = q.to ?? new Date(Date.now() + 60_000);
+    const inWindow = { gte: from, lt: to };
 
-    const [periods, models, tasks, daily, topUsers, interviews, latency] = await Promise.all([
-      // One pass per provider for all four periods.
-      prisma.$queryRaw<
-        {
-          provider: string;
-          todayUsd: number;
-          todayCalls: bigint;
-          weekUsd: number;
-          weekCalls: bigint;
-          windowUsd: number;
-          windowCalls: bigint;
-          allUsd: number;
-          allCalls: bigint;
-        }[]
-      >`
-        SELECT provider,
-               COALESCE(SUM(cost_usd) FILTER (WHERE created_at >= ${dayAgo}), 0)::float8  AS "todayUsd",
-               COUNT(*) FILTER (WHERE created_at >= ${dayAgo})                            AS "todayCalls",
-               COALESCE(SUM(cost_usd) FILTER (WHERE created_at >= ${weekAgo}), 0)::float8 AS "weekUsd",
-               COUNT(*) FILTER (WHERE created_at >= ${weekAgo})                           AS "weekCalls",
-               COALESCE(SUM(cost_usd) FILTER (WHERE created_at >= ${from}), 0)::float8    AS "windowUsd",
-               COUNT(*) FILTER (WHERE created_at >= ${from})                              AS "windowCalls",
-               COALESCE(SUM(cost_usd), 0)::float8                                         AS "allUsd",
-               COUNT(*)                                                                   AS "allCalls"
-        FROM usage_events
-        GROUP BY provider
-      `,
-
+    const [models, tasks, daily, topUsers, interviews, latency] = await Promise.all([
       prisma.usageEvent.groupBy({
         by: ['provider', 'kind', 'model'],
-        where: { createdAt: { gte: from } },
+        where: { createdAt: inWindow },
         _sum: { costUsd: true, inputTokens: true, outputTokens: true, units: true },
         _count: true,
       }),
 
       prisma.usageEvent.groupBy({
         by: ['provider', 'kind', 'task'],
-        where: { createdAt: { gte: from } },
+        where: { createdAt: inWindow },
         _sum: { costUsd: true },
         _count: true,
       }),
@@ -78,7 +50,7 @@ export const usageController = {
                SUM(cost_usd)::float8         AS cost,
                COUNT(*)                      AS calls
         FROM usage_events
-        WHERE created_at >= ${from}
+        WHERE created_at >= ${from} AND created_at < ${to}
         GROUP BY 1, 2
         ORDER BY 1
       `,
@@ -90,60 +62,48 @@ export const usageController = {
                COUNT(*)                 AS calls
         FROM usage_events u
         LEFT JOIN users usr ON usr.id = u.user_id
-        WHERE u.created_at >= ${from}
+        WHERE u.created_at >= ${from} AND u.created_at < ${to}
         GROUP BY 1, 2
         ORDER BY cost DESC
-        LIMIT 10
+        LIMIT 5
       `,
 
-      prisma.interview.count({ where: { createdAt: { gte: from } } }),
+      prisma.interview.count({ where: { createdAt: inWindow } }),
 
       // The number a candidate actually feels: how long a live turn's model call took.
-      prisma.$queryRaw<{ p50: number; p95: number; max: number }[]>`
+      prisma.$queryRaw<{ p50: number | null; p95: number | null; max: number | null }[]>`
         SELECT
           percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms)::float8  AS p50,
           percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)::float8 AS p95,
           MAX(duration_ms)::float8                                          AS max
         FROM usage_events
-        WHERE kind = 'llm' AND task IN ('evaluate', 'question') AND created_at >= ${from}
+        WHERE kind = 'llm' AND task IN ('evaluate', 'question')
+          AND created_at >= ${from} AND created_at < ${to}
       `,
     ]);
 
-    const seen = new Set<string>([
-      ...periods.map((r) => r.provider),
-      ...models.map((r) => r.provider),
-    ]);
+    const seen = new Set(models.map((m) => m.provider));
     const providerIds = [
       ...KNOWN_PROVIDERS,
       ...[...seen].filter((p) => !(KNOWN_PROVIDERS as readonly string[]).includes(p)).sort(),
     ];
 
-    const windowTotalUsd = periods.reduce((sum, r) => sum + r.windowUsd, 0);
+    const costOf = (id: string) =>
+      models.filter((m) => m.provider === id).reduce((sum, m) => sum + (m._sum.costUsd ?? 0), 0);
+    const callsOf = (id: string) =>
+      models.filter((m) => m.provider === id).reduce((sum, m) => sum + m._count, 0);
+    const totalUsd = providerIds.reduce((sum, id) => sum + costOf(id), 0);
+    const totalCalls = providerIds.reduce((sum, id) => sum + callsOf(id), 0);
 
     const providers = providerIds.map((id) => {
-      const row = periods.find((r) => r.provider === id);
       const idModels = models.filter((m) => m.provider === id);
-
-      const sumUnits = (kind: string) =>
-        idModels.filter((m) => m.kind === kind).reduce((sum, m) => sum + (m._sum.units ?? 0), 0);
-
-      const windowUsd = row?.windowUsd ?? 0;
-
+      const usd = costOf(id);
       return {
         provider: id,
-        today: row ? { usd: row.todayUsd, calls: Number(row.todayCalls) } : emptyPeriod(),
-        week: row ? { usd: row.weekUsd, calls: Number(row.weekCalls) } : emptyPeriod(),
-        window: row ? { usd: windowUsd, calls: Number(row.windowCalls) } : emptyPeriod(),
-        allTime: row ? { usd: row.allUsd, calls: Number(row.allCalls) } : emptyPeriod(),
+        usd,
+        calls: callsOf(id),
         /** Share of all spend in the window, 0–1. */
-        share: windowTotalUsd > 0 ? windowUsd / windowTotalUsd : 0,
-        /** Raw volume in the window, so each provider's cost can be sanity-checked. */
-        volume: {
-          inputTokens: idModels.reduce((sum, m) => sum + (m._sum.inputTokens ?? 0), 0),
-          outputTokens: idModels.reduce((sum, m) => sum + (m._sum.outputTokens ?? 0), 0),
-          sttSeconds: sumUnits('stt'),
-          ttsChars: sumUnits('tts'),
-        },
+        share: totalUsd > 0 ? usd / totalUsd : 0,
         models: idModels
           .map((m) => ({
             kind: m.kind,
@@ -180,23 +140,13 @@ export const usageController = {
       days.set(key, entry);
     }
 
-    const sum = (pick: (p: (typeof providers)[number]) => Period) =>
-      providers.reduce(
-        (acc, p) => ({ usd: acc.usd + pick(p).usd, calls: acc.calls + pick(p).calls }),
-        emptyPeriod(),
-      );
-    const allTime = sum((p) => p.allTime);
-
     res.json({
       currency: await getUsdToInr(),
-      windowDays: WINDOW_DAYS,
       totals: {
-        allTimeUsd: allTime.usd,
-        allTimeCalls: allTime.calls,
-        todayUsd: sum((p) => p.today).usd,
-        weekUsd: sum((p) => p.week).usd,
+        usd: totalUsd,
+        calls: totalCalls,
         interviews,
-        perInterviewUsd: interviews ? windowTotalUsd / interviews : 0,
+        perInterviewUsd: interviews ? totalUsd / interviews : 0,
       },
       providers,
       byDay: [...days.entries()].map(([day, entry]) => ({ day, ...entry })),
