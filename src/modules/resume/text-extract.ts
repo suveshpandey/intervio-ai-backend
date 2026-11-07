@@ -27,16 +27,23 @@ export function sniffFileType(buffer: Buffer): ResumeFileType | null {
   // %PDF
   if (buffer.subarray(0, 4).toString('latin1') === '%PDF') return 'pdf';
   // DOCX is a zip: PK\x03\x04
-  if (buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03 && buffer[3] === 0x04) return 'docx';
+  if (buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03 && buffer[3] === 0x04)
+    return 'docx';
   return null;
 }
 
 /** Extract plain text from a resume file buffer. */
 export async function extractResumeText(buffer: Buffer, type: ResumeFileType): Promise<string> {
   const text = type === 'pdf' ? await fromPdf(buffer) : await fromDocx(buffer);
-  const cleaned = text.replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  const cleaned = text
+    .replace(/\r/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
   if (cleaned.length < 50) {
-    throw badRequest('Could not read enough text from this file (is it a scanned image?)', 'empty_resume');
+    throw badRequest(
+      'Could not read enough text from this file (is it a scanned image?)',
+      'empty_resume',
+    );
   }
   return cleaned;
 }

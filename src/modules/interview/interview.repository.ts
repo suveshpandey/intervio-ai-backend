@@ -3,18 +3,75 @@ import { prisma } from '@/db/prisma';
 import type { EvalResult } from '@/modules/interview/types';
 
 export const interviewRepository = {
+  /** A new interview waits as `planned`; the clock starts when the room is first joined. */
   create(userId: string, blueprintId: string): Promise<Interview> {
-    return prisma.interview.create({
-      data: { userId, blueprintId, status: 'live', startedAt: new Date() },
+    return prisma.interview.create({ data: { userId, blueprintId, status: 'planned' } });
+  },
+
+  /** The user's interview that is still open (waiting to be joined, or running), if any. */
+  findOpenForUser(userId: string) {
+    return prisma.interview.findFirst({
+      where: { userId, status: { in: ['planned', 'live'] } },
+      orderBy: { createdAt: 'desc' },
+      include: { blueprint: true },
     });
   },
 
-  /** A user's interview that is still running, if any. */
-  findLiveForUser(userId: string) {
-    return prisma.interview.findFirst({
-      where: { userId, status: 'live' },
-      orderBy: { startedAt: 'desc' },
-      select: { id: true, startedAt: true, blueprint: { select: { durationMin: true } } },
+  /**
+   * Someone is entering the room. The first time, this starts the clock
+   * (planned → live). A rejoin just clears the "left" mark.
+   * @returns when the clock started, or null if the interview can't be joined
+   * (finished, or it was never started in time).
+   */
+  async markJoined(id: string): Promise<Date | null> {
+    const now = new Date();
+    const first = await prisma.interview.updateMany({
+      where: { id, status: 'planned' },
+      data: { status: 'live', startedAt: now, lastLeftAt: null },
+    });
+    if (first.count > 0) return now;
+
+    const row = await prisma.interview.findUnique({
+      where: { id },
+      select: { status: true, startedAt: true },
+    });
+    if (row?.status !== 'live' || !row.startedAt) return null;
+    await prisma.interview.update({ where: { id }, data: { lastLeftAt: null } });
+    return row.startedAt;
+  },
+
+  /** The voice connection dropped on a running interview: start the rejoin window. */
+  async markLeft(id: string): Promise<void> {
+    await prisma.interview.updateMany({
+      where: { id, status: 'live' },
+      data: { lastLeftAt: new Date() },
+    });
+  },
+
+  /** Never joined in time (or replaced by a new one). No report, nothing to score. */
+  async markNotStarted(id: string): Promise<boolean> {
+    const { count } = await prisma.interview.updateMany({
+      where: { id, status: 'planned' },
+      data: { status: 'not_started', endedAt: new Date() },
+    });
+    return count > 0;
+  },
+
+  /** Planned interviews nobody joined within `olderThanSec`. */
+  findUnstarted(olderThanSec: number, take = 50) {
+    return prisma.interview.findMany({
+      where: { status: 'planned', createdAt: { lte: new Date(Date.now() - olderThanSec * 1000) } },
+      take,
+      select: { id: true, userId: true },
+    });
+  },
+
+  /** Live interviews whose candidate left and didn't come back within `olderThanSec`. */
+  findLeft(olderThanSec: number, take = 50) {
+    return prisma.interview.findMany({
+      where: { status: 'live', lastLeftAt: { lte: new Date(Date.now() - olderThanSec * 1000) } },
+      take,
+      select: { id: true, userId: true },
     });
   },
 
@@ -40,7 +97,8 @@ export const interviewRepository = {
         createdAt: true,
         startedAt: true,
         endedAt: true,
-        blueprint: { select: { role: true, level: true, durationMin: true } },
+        lastLeftAt: true,
+        blueprint: { select: { role: true, level: true, durationMin: true, resumeId: true } },
         report: { select: { verdict: true, stats: true } },
         _count: { select: { turns: true } },
       },
@@ -72,23 +130,25 @@ export const interviewRepository = {
    * closed tab. Returned with what the finaliser needs to decide on a report.
    */
   findExpired(graceSec: number, take = 50) {
-    return prisma.interview.findMany({
-      where: { status: 'live', startedAt: { not: null } },
-      orderBy: { startedAt: 'asc' },
-      take,
-      select: {
-        id: true,
-        userId: true,
-        startedAt: true,
-        blueprint: { select: { durationMin: true } },
-        _count: { select: { turns: true } },
-      },
-    }).then((rows) =>
-      rows.filter((r) => {
-        const endsAt = r.startedAt!.getTime() + (r.blueprint.durationMin * 60 + graceSec) * 1000;
-        return endsAt <= Date.now();
-      }),
-    );
+    return prisma.interview
+      .findMany({
+        where: { status: 'live', startedAt: { not: null } },
+        orderBy: { startedAt: 'asc' },
+        take,
+        select: {
+          id: true,
+          userId: true,
+          startedAt: true,
+          blueprint: { select: { durationMin: true } },
+          _count: { select: { turns: true } },
+        },
+      })
+      .then((rows) =>
+        rows.filter((r) => {
+          const endsAt = r.startedAt!.getTime() + (r.blueprint.durationMin * 60 + graceSec) * 1000;
+          return endsAt <= Date.now();
+        }),
+      );
   },
 
   /** Close out an interview whose clock ran out. Scoped to `live` so it can't undo a real finish. */
@@ -152,7 +212,10 @@ export const interviewRepository = {
       where: { id, status: 'live' },
       data: { status: 'abandoned', endedAt: new Date() },
     });
-    return count > 0;
+    if (count > 0) return true;
+    // Ended before ever joining: nothing happened, so it is "not started", not abandoned.
+    await this.markNotStarted(id);
+    return false;
   },
 
   async complete(id: string): Promise<void> {

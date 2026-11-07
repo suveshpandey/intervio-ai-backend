@@ -23,4 +23,5 @@ resumeRouter.post(
 );
 resumeRouter.get('/', resumeController.list);
 resumeRouter.get('/:id', resumeController.detail);
+resumeRouter.put('/:id/target', resumeController.saveTarget);
 resumeRouter.delete('/:id', resumeController.remove);

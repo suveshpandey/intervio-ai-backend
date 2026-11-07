@@ -29,12 +29,7 @@ import { assertDailyBudget } from '@/modules/usage/guards';
 
 /** Times one question may be repeated or reworded before the engine moves on. */
 export const MAX_REPEATS = 2;
-import type {
-  Decision,
-  Difficulty,
-  EvalResult,
-  InterviewState,
-} from '@/modules/interview/types';
+import type { Decision, Difficulty, EvalResult, InterviewState } from '@/modules/interview/types';
 
 /**
  * How much wall-clock a turn costs. In Phase 4 the voice layer will pass the real
@@ -46,7 +41,23 @@ const MAX_SUMMARY = 6;
 const MAX_LAST_TURNS = 2;
 const MAX_OPEN_GAPS = 3;
 
+/** Same resume, role and settings: starting again should return to the same interview. */
+function sameSetup(a: Blueprint, b: Blueprint): boolean {
+  return (
+    a.resumeId === b.resumeId &&
+    a.role === b.role &&
+    a.level === b.level &&
+    a.difficulty === b.difficulty &&
+    a.durationMin === b.durationMin &&
+    a.voice === b.voice &&
+    (a.jdId ?? null) === (b.jdId ?? null) &&
+    a.probeClaimIds.join() === b.probeClaimIds.join()
+  );
+}
+
 export interface TurnResult {
+  /** Returned the interview that was already waiting, rather than creating one. */
+  reused?: boolean;
   interviewId: string;
   turnIdx: number;
   /** null once the interview is over. */
@@ -81,13 +92,32 @@ export async function startInterview(userId: string, blueprintId: string): Promi
   await expireFinishedInterviews().catch((err: unknown) =>
     logger.error({ err }, 'sweep before start failed'),
   );
-  const running = await interviewRepository.findLiveForUser(userId);
-  if (running) {
+  const open = await interviewRepository.findOpenForUser(userId);
+  if (open?.status === 'live') {
     throw new AppError(
       409,
-      'You already have an interview running. Finish it, end it, or wait for its time to run out.',
+      'You already have an interview in progress. Rejoin it from the sidebar or dashboard, or end it first.',
       'interview_in_progress',
     );
+  }
+  if (open?.status === 'planned') {
+    // Waiting to be joined. Same setup → hand it back instead of making another.
+    const reusable = sameSetup(open.blueprint, blueprint) ? await stateStore.load(open.id) : null;
+    if (reusable?.pendingQuestion) {
+      if (open.blueprintId !== blueprint.id)
+        await prisma.blueprint.delete({ where: { id: blueprint.id } }).catch(() => {});
+      return {
+        interviewId: open.id,
+        turnIdx: reusable.turnIdx,
+        question: reusable.pendingQuestion,
+        done: false,
+        sectionKey: sections[reusable.sectionIdx]?.key ?? sections[0]!.key,
+        reused: true,
+      };
+    }
+    // Different setup (or its state is gone): the waiting one makes way for the new one.
+    await interviewRepository.markNotStarted(open.id);
+    await stateStore.clear(open.id).catch(() => {});
   }
 
   // Service-wide emergency brake (off unless DAILY_SPEND_LIMIT_USD is set).
@@ -230,9 +260,20 @@ export async function submitAnswer(
   // 1b. The model read it as a request about the question (a phrasing the fast
   //     path didn't know). Re-ask instead of scoring it as a bad answer.
   const modelAsk: RepeatKind | null =
-    evaluation.issue === 'repeat_request' ? 'repeat' : evaluation.issue === 'clarify_request' ? 'clarify' : null;
+    evaluation.issue === 'repeat_request'
+      ? 'repeat'
+      : evaluation.issue === 'clarify_request'
+        ? 'clarify'
+        : null;
   if (modelAsk && (state.pendingRepeats ?? 0) < MAX_REPEATS) {
-    return askAgain(state, blueprint, sections, modelAsk, evaluation.nextQuestion ?? null, turnSeconds);
+    return askAgain(
+      state,
+      blueprint,
+      sections,
+      modelAsk,
+      evaluation.nextQuestion ?? null,
+      turnSeconds,
+    );
   }
 
   // 2. Advance the clocks.
@@ -254,7 +295,10 @@ export async function submitAnswer(
 
   // 5. Persist the completed turn + any claim evidence.
   await interviewRepository.answerTurn(answeredTurnId, answer, evaluation, decision.action);
-  if (probedClaimId && (evaluation.claimEvidence === 'support' || evaluation.claimEvidence === 'weaken')) {
+  if (
+    probedClaimId &&
+    (evaluation.claimEvidence === 'support' || evaluation.claimEvidence === 'weaken')
+  ) {
     await interviewRepository.addEvidence({
       interviewId,
       claimId: probedClaimId,
@@ -300,7 +344,9 @@ export async function submitAnswer(
   //    otherwise it's free from the merged call, or one more call on an override.
   //    Spoken exactly as written, in one take — what's saved is what was said.
   const prefetched = await usablePrefetch(interviewId, answeredTurnIdx, decision, state);
-  const question = prefetched ?? (await nextQuestion(state, blueprint, sections, decision, evaluation, movedSection));
+  const question =
+    prefetched ??
+    (await nextQuestion(state, blueprint, sections, decision, evaluation, movedSection));
   await issueQuestion(state, sections, question);
   await stateStore.save(state);
   prefetchMoveOn(state, blueprint, sections);
@@ -311,7 +357,10 @@ export async function submitAnswer(
     question,
     done: false,
     sectionKey: sections[state.sectionIdx]?.key ?? 'unknown',
-    debug: { ...debugOf(decision, evaluation, state, Boolean(prefetched)), speculative: Boolean(usablePrepared) },
+    debug: {
+      ...debugOf(decision, evaluation, state, Boolean(prefetched)),
+      speculative: Boolean(usablePrepared),
+    },
   };
 }
 
@@ -329,7 +378,12 @@ function sectionsOf(blueprint: Blueprint): PlanSection[] {
   return (blueprint.sections as unknown as PlanSection[]) ?? [];
 }
 
-function debugOf(decision: Decision, evaluation: EvalResult, state: InterviewState, prefetched: boolean) {
+function debugOf(
+  decision: Decision,
+  evaluation: EvalResult,
+  state: InterviewState,
+  prefetched: boolean,
+) {
   return {
     action: decision.action,
     overrode: decision.overrode,
@@ -409,7 +463,10 @@ function applyEvaluation(
     if (!key) continue;
     const prev = state.skills[key];
     state.skills[key] = prev
-      ? { score: (prev.score * prev.samples + score) / (prev.samples + 1), samples: prev.samples + 1 }
+      ? {
+          score: (prev.score * prev.samples + score) / (prev.samples + 1),
+          samples: prev.samples + 1,
+        }
       : { score, samples: 1 };
   }
 
@@ -476,7 +533,11 @@ async function nextQuestion(
   movedSection: boolean,
 ): Promise<string> {
   // Common path: the engine agreed, so the merged call already wrote the question.
-  if (!decision.overrode && evaluation.nextQuestion && !isRepeat(evaluation.nextQuestion, state.askedQuestions)) {
+  if (
+    !decision.overrode &&
+    evaluation.nextQuestion &&
+    !isRepeat(evaluation.nextQuestion, state.askedQuestions)
+  ) {
     return evaluation.nextQuestion;
   }
 
@@ -505,7 +566,11 @@ async function nextQuestion(
  * the candidate answers the question just issued. Fire-and-forget: never throws,
  * never delays the current turn.
  */
-function prefetchMoveOn(state: InterviewState, blueprint: Blueprint, sections: PlanSection[]): void {
+function prefetchMoveOn(
+  state: InterviewState,
+  blueprint: Blueprint,
+  sections: PlanSection[],
+): void {
   const move = predictMoveOn(state, blueprint.probeClaimIds, sections);
   if (move.finished) return;
 
@@ -520,7 +585,10 @@ function prefetchMoveOn(state: InterviewState, blueprint: Blueprint, sections: P
     const compact = await contextFor(future, blueprint, sections);
     const q =
       move.gotoSectionIdx !== undefined
-        ? await generateOpeningQuestion(compact, sections[move.gotoSectionIdx]?.key ?? 'claim_verification')
+        ? await generateOpeningQuestion(
+            compact,
+            sections[move.gotoSectionIdx]?.key ?? 'claim_verification',
+          )
         : await generateQuestion(
             compact,
             'MOVE_ON',
@@ -554,7 +622,6 @@ async function usablePrefetch(
   return q;
 }
 
-
 /* ─────────────── asked to repeat / clarify the question ─────────────── */
 
 /**
@@ -585,7 +652,8 @@ async function askAgain(
   let spoken = `Sure — ${stripLeadIn(original)}`;
 
   if (kind === 'clarify') {
-    const reworded = suggested?.trim() || (await rewordQuestion(state, blueprint, sections, original));
+    const reworded =
+      suggested?.trim() || (await rewordQuestion(state, blueprint, sections, original));
     // Bare question: the model often opens with its own "No worries, …", and
     // there should be exactly one lead-in — ours.
     const bare = reworded ? stripLeadIn(reworded) : null;
@@ -602,7 +670,9 @@ async function askAgain(
   await stateStore.save(state);
   logger.info(
     { interviewId: state.interviewId, kind, repeats: state.pendingRepeats },
-    kind === 'repeat' ? 'candidate asked to repeat — re-asking' : 'candidate asked to clarify — rewording',
+    kind === 'repeat'
+      ? 'candidate asked to repeat — re-asking'
+      : 'candidate asked to clarify — rewording',
   );
 
   return {

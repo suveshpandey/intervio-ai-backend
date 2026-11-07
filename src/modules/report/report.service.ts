@@ -16,6 +16,7 @@ import {
   computeReport,
   MIN_ANSWERS_FOR_REPORT,
   type ComputedReport,
+  type Verdict,
   type PlannedClaim,
   type ReportEvidence,
   type ReportTurn,
@@ -30,17 +31,56 @@ export interface ReportView extends ComputedReport {
   partial: boolean;
   narrative: string;
   generatedAt: Date;
+  /** The verdict from the interview before this one on the same resume, if any. */
+  previous?: {
+    verdict: Verdict;
+    claimsSupported: number;
+    claimsProbed: number;
+    createdAt: Date;
+  } | null;
 }
 
 /** The stored report, building it first if it doesn't exist yet. */
 export async function getOrCreateReport(userId: string, interviewId: string): Promise<ReportView> {
   const existing = await prisma.report.findUnique({ where: { interviewId } });
-  if (existing) {
-    const interview = await interviewRepository.findById(interviewId, userId);
-    if (!interview) throw notFound('Interview not found');
-    return toView(existing, interview.blueprint.role, interview.blueprint.level, interview.status);
-  }
-  return generateReport(userId, interviewId);
+  const interview = await interviewRepository.findById(interviewId, userId);
+  if (!interview) throw notFound('Interview not found');
+
+  const view = existing
+    ? toView(existing, interview.blueprint.role, interview.blueprint.level, interview.status)
+    : await generateReport(userId, interviewId);
+  return { ...view, previous: await previousResult(userId, interview) };
+}
+
+/** The report of the interview just before this one, for the same resume and role. */
+async function previousResult(
+  userId: string,
+  interview: { id: string; createdAt: Date; blueprint: { resumeId: string; role: string } },
+): Promise<ReportView['previous']> {
+  const prev = await prisma.report.findFirst({
+    where: {
+      interview: {
+        userId,
+        id: { not: interview.id },
+        createdAt: { lt: interview.createdAt },
+        // Same role only: a Software Engineer check isn't comparable to an AI Engineer one.
+        blueprint: {
+          resumeId: interview.blueprint.resumeId,
+          role: { equals: interview.blueprint.role, mode: 'insensitive' },
+        },
+      },
+    },
+    orderBy: { interview: { createdAt: 'desc' } },
+    select: { verdict: true, stats: true, createdAt: true },
+  });
+  if (!prev) return null;
+  const stats = prev.stats as ComputedReport['stats'];
+  return {
+    verdict: prev.verdict as Verdict,
+    claimsSupported: stats.claimsSupported,
+    claimsProbed: stats.claimsProbed,
+    createdAt: prev.createdAt,
+  };
 }
 
 /** Computes, writes the narrative, and saves. Overwrites any existing report. */
@@ -51,7 +91,10 @@ export async function generateReport(userId: string, interviewId: string): Promi
     throw badRequest('This interview is not finished yet', 'interview_not_finished');
   }
 
-  const { turns, evidence, claims } = await loadInputs(interviewId, interview.blueprint.probeClaimIds);
+  const { turns, evidence, claims } = await loadInputs(
+    interviewId,
+    interview.blueprint.probeClaimIds,
+  );
   const answered = turns.filter((t) => t.answer.trim().length > 0);
   if (answered.length < MIN_ANSWERS_FOR_REPORT) {
     throw badRequest(
@@ -61,7 +104,11 @@ export async function generateReport(userId: string, interviewId: string): Promi
   }
 
   const computed = computeReport(turns, evidence, claims);
-  const { text, source } = await writeNarrative(computed, interview.blueprint.role, interview.blueprint.level);
+  const { text, source } = await writeNarrative(
+    computed,
+    interview.blueprint.role,
+    interview.blueprint.level,
+  );
 
   // Our own typed structures; Prisma wants them as plain JSON.
   const json = (value: unknown) => value as Prisma.InputJsonValue;
@@ -101,7 +148,10 @@ async function loadInputs(interviewId: string, probeClaimIds: string[]) {
   const [turnRows, evidenceRows, claimRows] = await Promise.all([
     interviewRepository.listTurns(interviewId),
     prisma.evidence.findMany({ where: { interviewId } }),
-    prisma.claim.findMany({ where: { id: { in: probeClaimIds } }, select: { id: true, text: true } }),
+    prisma.claim.findMany({
+      where: { id: { in: probeClaimIds } },
+      select: { id: true, text: true },
+    }),
   ]);
 
   const turns: ReportTurn[] = turnRows.map((t) => ({

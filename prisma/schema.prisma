@@ -61,6 +61,11 @@ model Resume {
   // { skills: [...], projects: [...], experience: [...] }
   extracted Json?
 
+  // Interview targets for this resume, most recently used first: [{ role, level, difficulty,
+  // durationMin, voice, jdId? }]. One per role (e.g. "Software Engineer", "AI Engineer").
+  // "Start interview" builds its plan from the first, so there is no separate plan step.
+  targets Json?
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -118,8 +123,14 @@ model Interview {
   userId      String @map("user_id")
   blueprintId String @map("blueprint_id")
 
-  status    String    @default("planned") // planned | live | completed | abandoned
-  startedAt DateTime? @map("started_at")
+  // planned     created, nobody has joined the room yet (no clock). Closed as not_started after 5 min.
+  // live        someone joined; the clock is running
+  // completed   finished (or its time ran out)
+  // abandoned   ended early, or left and never came back within the rejoin window
+  // not_started never joined in time
+  status    String    @default("planned")
+  startedAt DateTime? @map("started_at") // set when the room is first joined, not when created
+  lastLeftAt DateTime? @map("last_left_at") // when the voice connection last dropped; cleared on rejoin
   endedAt   DateTime? @map("ended_at")
 
   createdAt DateTime @default(now()) @map("created_at")

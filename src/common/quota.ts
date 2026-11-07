@@ -1,6 +1,7 @@
 /**
  * Daily usage quotas for the costly actions: starting an interview, analysing a
- * resume, building an interview plan.
+ * resume. (Plans cost nothing now — they're built by rule, not an LLM — so they
+ * have no quota.)
  *
  * Each action is counted in several buckets over a rolling 24 hours, and is
  * refused when ANY of them is used up:
@@ -17,6 +18,8 @@
  * Only SUCCESSFUL actions count: the check runs before the route, the use is
  * recorded after a 2xx response. A failed upload or a refused start costs nothing.
  *
+ * Admins (ADMIN_EMAILS) skip every bucket and are not counted.
+ *
  * Rolling window = a Redis sorted set of timestamps per key. Like the rate
  * limiter, this fails OPEN if Redis is down: an outage must not lock people out.
  */
@@ -28,21 +31,21 @@ import { env } from '@/config/env';
 import { AppError } from '@/common/errors';
 import { logger } from '@/common/logger';
 import { byClientIp } from '@/common/rate-limit';
+import { isAdminEmail } from '@/common/admin-guard';
+import { userRepository } from '@/db/user.repository';
 
-export type QuotaName = 'interview' | 'resume' | 'plan';
+export type QuotaName = 'interview' | 'resume';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const LIMIT: Record<QuotaName, () => number> = {
   interview: () => env.DAILY_INTERVIEWS,
   resume: () => env.DAILY_RESUMES,
-  plan: () => env.DAILY_PLANS,
 };
 
 const NOUN: Record<QuotaName, [one: string, many: string]> = {
   interview: ['interview', 'interviews'],
   resume: ['resume analysis', 'resume analyses'],
-  plan: ['interview plan', 'interview plans'],
 };
 
 type Scope = 'account' | 'browser' | 'device' | 'network';
@@ -111,6 +114,13 @@ async function recordUse(name: QuotaName, req: Request): Promise<void> {
   }
 }
 
+/** Admins (the ADMIN_EMAILS allowlist) are exempt; the email comes from the server-side session. */
+async function isAdmin(req: Request): Promise<boolean> {
+  if (!req.userId) return false;
+  const user = await userRepository.findById(req.userId);
+  return user ? isAdminEmail(user.email) : false;
+}
+
 /**
  * Route middleware: refuse when the allowance is spent; otherwise let the route
  * run and count it only if it succeeded.
@@ -118,6 +128,7 @@ async function recordUse(name: QuotaName, req: Request): Promise<void> {
 export function requireQuota(name: QuotaName) {
   return async function quota(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      if (await isAdmin(req)) return next();
       await assertQuota(name, req);
     } catch (err) {
       if (err instanceof AppError) return next(err);
@@ -126,7 +137,8 @@ export function requireQuota(name: QuotaName) {
     }
 
     res.on('finish', () => {
-      if (res.statusCode >= 200 && res.statusCode < 300) {
+      // `quotaFree`: the route handed back something already counted (e.g. a waiting interview).
+      if (res.statusCode >= 200 && res.statusCode < 300 && !res.locals.quotaFree) {
         recordUse(name, req).catch((err: unknown) =>
           logger.error({ err, quota: name }, 'failed to record quota use'),
         );

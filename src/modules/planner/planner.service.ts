@@ -1,18 +1,19 @@
 import type { Claim } from '@prisma/client';
+import { z } from 'zod';
 import { prisma } from '@/db/prisma';
+import { DEFAULT_VOICE } from '@/modules/voice/voices';
 import { badRequest, notFound } from '@/common/errors';
-import { completeJson } from '@/llm/router';
-import { planPrompt } from '@/llm/prompts/plan';
 import { resumeRepository } from '@/modules/resume/resume.repository';
 import { claimRepository } from '@/modules/intelligence/claim.repository';
-import { extractedResumeSchema } from '@/modules/intelligence/schema';
+import { claimHistory, type ClaimAttempts } from '@/modules/planner/claim-history';
 import { blueprintRepository } from '@/modules/planner/blueprint.repository';
 import {
-  planLlmSchema,
   SECTION_KEYS,
   SECTION_TITLES,
   SECTION_WEIGHTS,
+  targetSchema,
   type BlueprintConfig,
+  type InterviewTarget,
   type PlanSection,
   type SectionKey,
 } from '@/modules/planner/schema';
@@ -40,7 +41,8 @@ export function claimCapacity(claimBudgetMin: number): number {
 export async function buildBlueprint(userId: string, config: BlueprintConfig) {
   const resume = await resumeRepository.findById(config.resumeId, userId);
   if (!resume) throw notFound('Resume not found');
-  if (resume.parseStatus !== 'done') throw badRequest('Resume is still being analyzed', 'resume_not_ready');
+  if (resume.parseStatus !== 'done')
+    throw badRequest('Resume is still being analyzed', 'resume_not_ready');
 
   const claims = await claimRepository.listByResume(resume.id);
   if (claims.length === 0) throw badRequest('No claims to build an interview from', 'no_claims');
@@ -54,31 +56,15 @@ export async function buildBlueprint(userId: string, config: BlueprintConfig) {
     else jdId = null;
   }
 
-  // flash spends output tokens on reasoning before the JSON — budget generously.
-  // Projects (with origin/org) give the planner richer grounding than claims alone.
-  const parsedResume = extractedResumeSchema.safeParse(resume.extracted);
-  const projects = parsedResume.success ? parsedResume.data.projects : [];
-
-  // Tell the planner up front how many claims actually fit, so it picks the BEST n
-  // rather than us truncating its ranked list afterwards.
-  const targetClaims = claimCapacity(config.durationMin * SECTION_WEIGHTS.claim_verification);
-
-  // The plan model spends hidden "thinking" tokens before the JSON, and that scales
-  // with prompt size — budget high up front so we don't waste a truncated first call.
-  // It takes ~17-20s; its time limit is raised accordingly (TASK_TIMEOUT_MS).
-  const { data: plan } = await completeJson(
-    'plan',
-    planLlmSchema,
-    planPrompt(claims, jdSkills, config, projects, targetClaims),
-    { maxTokens: 8192 },
-  );
-
-  const sections = normalizeSections(plan.sections, config.durationMin);
-  // Re-derive from the FINAL budget — the planner may have shifted section time.
+  // The section split is a fixed formula and the claims are picked by rule (selectClaims),
+  // so building a plan is instant and two interviews on one resume are comparable.
+  // (It used to ask an LLM, ~20s, and got a different answer every time.)
+  const sections = normalizeSections([], config.durationMin);
   const capacity = claimCapacity(
     sections.find((s) => s.key === 'claim_verification')?.budgetMin ?? 0,
   );
-  const probeClaimIds = selectClaims(plan.probeClaimIds, claims, jdSkills, capacity);
+  const history = await claimHistory(userId, resume.id);
+  const probeClaimIds = selectClaims(claims, jdSkills, capacity, history);
 
   return blueprintRepository.create({
     userId,
@@ -124,40 +110,123 @@ export function normalizeSections(
   // Absorb rounding drift into the largest section so the sum is exact.
   const drift = duration - scaled.reduce((a, s) => a + s.budgetMin, 0);
   if (drift !== 0) {
-    const largest = scaled.reduce((best, s) => (s.budgetMin > best.budgetMin ? s : best), scaled[0]!);
+    const largest = scaled.reduce(
+      (best, s) => (s.budgetMin > best.budgetMin ? s : best),
+      scaled[0]!,
+    );
     largest.budgetMin = Math.max(1, largest.budgetMin + drift);
   }
   return scaled;
 }
 
-/** Keep valid LLM-chosen claim ids in order, then top up to `capacity` by our own ranking. */
+/**
+ * 0 = failed last time (always asked again) · 1 = untested, or held up once (still
+ * worth asking) · 2 = held up twice running (makes room for others).
+ */
+export function claimTier(attempts: ClaimAttempts = []): 0 | 1 | 2 {
+  const last = attempts[attempts.length - 1];
+  if (last && last !== 'supported') return 0;
+  if (attempts.length >= 2 && attempts[attempts.length - 2] === 'supported') return 2;
+  return 1;
+}
+
+/**
+ * Pick which claims this interview probes — by rule, never by an LLM, so every
+ * interview on a resume checks the same important claims and results compare.
+ * Order: tier (see claimTier), then importance × priority (+ JD match), then a
+ * stable tie-break so the same inputs always give the same plan.
+ */
 export function selectClaims(
-  llmIds: string[],
   claims: Claim[],
   jdSkills: string[],
   capacity: number,
+  history: Map<string, ClaimAttempts> = new Map(),
 ): string[] {
-  const byId = new Map(claims.map((c) => [c.id, c]));
-
-  const chosen: string[] = [];
-  for (const id of llmIds) {
-    if (byId.has(id) && !chosen.includes(id)) chosen.push(id);
-  }
-  const result = chosen.slice(0, capacity);
-
-  const target = Math.min(capacity, claims.length);
-  if (result.length < target) {
-    const jdLower = new Set(jdSkills.map((s) => s.toLowerCase()));
-    const ranked = [...claims].sort((a, b) => score(b, jdLower) - score(a, jdLower));
-    for (const c of ranked) {
-      if (result.length >= target) break;
-      if (!result.includes(c.id)) result.push(c.id);
-    }
-  }
-  return result;
+  const jdLower = new Set(jdSkills.map((s) => s.toLowerCase()));
+  return [...claims]
+    .sort(
+      (a, b) =>
+        claimTier(history.get(a.id)) - claimTier(history.get(b.id)) ||
+        score(b, jdLower) - score(a, jdLower) ||
+        a.createdAt.getTime() - b.createdAt.getTime() ||
+        a.id.localeCompare(b.id),
+    )
+    .slice(0, Math.min(capacity, claims.length))
+    .map((c) => c.id);
 }
 
 function score(c: Claim, jdLower: Set<string>): number {
   const relevance = c.relatedSkills.filter((s) => jdLower.has(s.toLowerCase())).length;
   return c.importance * c.priority + relevance * 2;
+}
+
+/** What "Start interview" uses when the user hasn't tweaked the target yet. */
+export function defaultTarget(resume: { extracted: unknown }): InterviewTarget {
+  const role = (resume.extracted as { experience?: { role?: string }[] } | null)?.experience?.[0]
+    ?.role;
+  return {
+    role: role?.trim() || 'Software Engineer',
+    level: 'mid',
+    difficulty: 'standard',
+    durationMin: 15,
+    voice: DEFAULT_VOICE,
+  };
+}
+
+/** Most roles a resume remembers; the least recently used is forgotten first. */
+export const MAX_TARGETS = 6;
+
+/** The resume's saved targets, most recently used first (never empty). */
+export function targetsFor(resume: { extracted: unknown; targets: unknown }): InterviewTarget[] {
+  const saved = z.array(targetSchema).safeParse(resume.targets);
+  return saved.success && saved.data.length > 0 ? saved.data : [defaultTarget(resume)];
+}
+
+/**
+ * Saved targets plus every role this resume has actually been planned for, most
+ * recent first. Roles used before the list existed (or never saved) still show up.
+ */
+export async function targetsWithHistory(resume: {
+  id: string;
+  extracted: unknown;
+  targets: unknown;
+}): Promise<InterviewTarget[]> {
+  const saved = z.array(targetSchema).safeParse(resume.targets);
+  const list: InterviewTarget[] = saved.success ? [...saved.data] : [];
+
+  const past = await prisma.blueprint.findMany({
+    where: { resumeId: resume.id },
+    orderBy: { createdAt: 'desc' },
+    select: {
+      role: true,
+      level: true,
+      difficulty: true,
+      durationMin: true,
+      voice: true,
+      jdId: true,
+    },
+    take: 50,
+  });
+  for (const b of past) {
+    const known = list.some((t) => t.role.trim().toLowerCase() === b.role.trim().toLowerCase());
+    if (known) continue;
+    const t = targetSchema.safeParse({ ...b, jdId: b.jdId ?? undefined });
+    if (t.success) list.push(t.data);
+  }
+  return list.length > 0 ? list.slice(0, MAX_TARGETS) : [defaultTarget(resume)];
+}
+
+/** The target "Start interview" uses: the one used last. */
+export function targetFor(resume: { extracted: unknown; targets: unknown }): InterviewTarget {
+  return targetsFor(resume)[0]!;
+}
+
+/** Remember this target as the most recent one, replacing any earlier entry for the same role. */
+export function rememberTarget(
+  existing: InterviewTarget[],
+  next: InterviewTarget,
+): InterviewTarget[] {
+  const same = (t: InterviewTarget) =>
+    t.role.trim().toLowerCase() === next.role.trim().toLowerCase();
+  return [next, ...existing.filter((t) => !same(t))].slice(0, MAX_TARGETS);
 }

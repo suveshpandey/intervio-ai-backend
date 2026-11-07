@@ -29,8 +29,15 @@ export const resumeRepository = {
     return prisma.resume.findMany({ where: { userId }, select: { fileUrl: true } });
   },
 
+  setTargets(id: string, targets: Prisma.InputJsonValue) {
+    return prisma.resume.update({ where: { id }, data: { targets } });
+  },
+
   setStatus(id: string, parseStatus: Prisma.ResumeUpdateInput['parseStatus'], parseError?: string) {
-    return prisma.resume.update({ where: { id }, data: { parseStatus, parseError: parseError ?? null } });
+    return prisma.resume.update({
+      where: { id },
+      data: { parseStatus, parseError: parseError ?? null },
+    });
   },
 
   setExtracted(id: string, extracted: Prisma.InputJsonValue) {

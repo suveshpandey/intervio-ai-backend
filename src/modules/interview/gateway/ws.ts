@@ -2,6 +2,7 @@ import type { Server } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { logger } from '@/common/logger';
 import { voiceEnabled, corsOrigins } from '@/config/env';
+import { interviewRepository } from '@/modules/interview/interview.repository';
 import { redeemTicket } from '@/modules/interview/gateway/ticket';
 import { VoiceSession } from '@/modules/interview/gateway/session';
 
@@ -106,7 +107,13 @@ function onConnection(ws: WebSocket, ticket: { userId: string; interviewId: stri
   const mine = [...live.values()].filter((e) => e.userId === ticket.userId).length;
   if (mine >= MAX_SESSIONS_PER_USER) {
     log.warn({ userId: ticket.userId, open: mine }, 'too many live voice sessions — refusing');
-    ws.send(JSON.stringify({ type: 'error', code: 'too_many_sessions', message: 'You already have an interview open.' }));
+    ws.send(
+      JSON.stringify({
+        type: 'error',
+        code: 'too_many_sessions',
+        message: 'You already have an interview open.',
+      }),
+    );
     ws.close();
     return;
   }
@@ -130,7 +137,14 @@ function onConnection(ws: WebSocket, ticket: { userId: string; interviewId: stri
 
   ws.on('close', () => {
     log.info('voice session closed');
-    if (live.get(ticket.interviewId)?.session === session) live.delete(ticket.interviewId);
+    // Only when this is the current socket: a refresh replaces it, and that is not "leaving".
+    if (live.get(ticket.interviewId)?.session === session) {
+      live.delete(ticket.interviewId);
+      // Starts the rejoin window; a no-op if the interview already finished.
+      interviewRepository
+        .markLeft(ticket.interviewId)
+        .catch((err: unknown) => log.error({ err }, 'could not record that the candidate left'));
+    }
     session.close();
   });
 
@@ -142,7 +156,9 @@ function onConnection(ws: WebSocket, ticket: { userId: string; interviewId: stri
   session.start().catch((err) => {
     log.error({ err }, 'voice session failed to start');
     try {
-      ws.send(JSON.stringify({ type: 'error', code: 'start_failed', message: 'Could not start voice.' }));
+      ws.send(
+        JSON.stringify({ type: 'error', code: 'start_failed', message: 'Could not start voice.' }),
+      );
     } catch {
       /* socket already gone */
     }

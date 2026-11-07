@@ -23,6 +23,16 @@ vi.mock('@/db/redis', () => {
   };
 });
 
+const emails: Record<string, string> = { boss: 'boss@example.com', you: 'you@example.com' };
+vi.mock('@/db/user.repository', () => ({
+  userRepository: {
+    findById: async (id: string) => (emails[id] ? { id, email: emails[id] } : null),
+  },
+}));
+vi.mock('@/common/admin-guard', () => ({
+  isAdminEmail: (email: string) => email === 'boss@example.com',
+}));
+
 const { requireQuota } = await import('@/common/quota');
 
 const WIFI = '10.0.0.1';
@@ -35,7 +45,10 @@ async function start(
   ip = WIFI,
 ): Promise<string> {
   const req = { userId, deviceId, fingerprint, ip } as unknown as Request;
-  const res = Object.assign(new EventEmitter(), { statusCode: 201 }) as unknown as Response;
+  const res = Object.assign(new EventEmitter(), {
+    statusCode: 201,
+    locals: {},
+  }) as unknown as Response;
   let error: Error | undefined;
   await requireQuota('interview')(req, res, (err?: unknown) => {
     error = err as Error | undefined;
@@ -83,10 +96,43 @@ describe('daily quota', () => {
       ip: WIFI,
     } as unknown as Request;
     for (let i = 0; i < 5; i++) {
-      const res = Object.assign(new EventEmitter(), { statusCode: 500 }) as unknown as Response;
+      const res = Object.assign(new EventEmitter(), {
+        statusCode: 500,
+        locals: {},
+      }) as unknown as Response;
       await requireQuota('interview')(req, res, () => undefined);
       res.emit('finish');
     }
     expect(await start('you', 'd1', 'fp1')).toBe('ok');
+  });
+
+  it('an admin is never limited and never counted', async () => {
+    for (let i = 0; i < 10; i++) expect(await start('boss', 'd9', 'fp9')).toBe('ok');
+    expect(store.size).toBe(0);
+  });
+
+  it('a non-admin on the same browser as an admin is still limited', async () => {
+    for (let i = 0; i < 5; i++) await start('boss', 'd1', 'fp1');
+    for (let i = 0; i < 3; i++) expect(await start('you', 'd1', 'fp1')).toBe('ok');
+    expect(await start('you', 'd1', 'fp1')).toMatch(/You've used today's 3 interviews/);
+  });
+
+  it('a response marked quotaFree (going back into a waiting interview) is not counted', async () => {
+    const req = {
+      userId: 'you',
+      deviceId: 'd1',
+      fingerprint: 'fp1',
+      ip: WIFI,
+    } as unknown as Request;
+    for (let i = 0; i < 5; i++) {
+      const res = Object.assign(new EventEmitter(), {
+        statusCode: 200,
+        locals: { quotaFree: true },
+      }) as unknown as Response;
+      await requireQuota('interview')(req, res, () => undefined);
+      res.emit('finish');
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    for (let i = 0; i < 3; i++) expect(await start('you', 'd1', 'fp1')).toBe('ok');
   });
 });
