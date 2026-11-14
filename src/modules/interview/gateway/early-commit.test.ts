@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { earlyCommitHoldMs, looksFinished } from '@/modules/interview/gateway/early-commit';
+import {
+  earlyCommitHoldMs,
+  endsUnfinished,
+  looksFinished,
+} from '@/modules/interview/gateway/early-commit';
 
 describe('looksFinished', () => {
   it('accepts a full sentence', () => {
@@ -30,5 +34,18 @@ describe('earlyCommitHoldMs', () => {
   it('disables early commit for someone who pauses a lot', () => {
     expect(earlyCommitHoldMs(1200, 3, 1500)).toBe(0);
     expect(earlyCommitHoldMs(1200, 3, 2500)).toBe(0);
+  });
+});
+
+describe('endsUnfinished', () => {
+  it('flags text that stops mid-thought', () => {
+    expect(endsUnfinished('The main delay was in, I think, the')).toBe(true);
+    expect(endsUnfinished("I'm I'm I'm, you know,")).toBe(true);
+    expect(endsUnfinished('the the')).toBe(true);
+  });
+  it('lets finished sentences through', () => {
+    expect(endsUnfinished('It was working fine.')).toBe(false);
+    expect(endsUnfinished('Who are you?')).toBe(false);
+    expect(endsUnfinished('')).toBe(false);
   });
 });

@@ -73,6 +73,11 @@ const schema = z.object({
    * (Deepgram saw a pause AND the text ends in . ? !) and they've stayed quiet this
    * many ms. 0 turns it off, leaving only Deepgram's slower utterance-end signal.
    */
+  /**
+   * When the silence signal fires but the answer stops mid-sentence ("...in, I think, the"),
+   * wait this much longer for them to carry on before scoring it. 0 turns it off.
+   */
+  TURN_INCOMPLETE_EXTRA_MS: z.coerce.number().int().min(0).max(5000).default(1500),
   TURN_EARLY_COMMIT_MS: z.coerce.number().int().min(0).max(5000).default(1200),
 
   /**

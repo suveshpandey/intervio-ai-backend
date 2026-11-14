@@ -22,6 +22,12 @@ const PAUSE_MARGIN = 1.4;
 /** Past this the speaker pauses too much for early commit to be safe. */
 const MAX_SAFE_HOLD_MS = 1700;
 
+/** True when the text stops mid-thought: it doesn't end on . ? or ! */
+export function endsUnfinished(answer: string): boolean {
+  const text = answer.trim();
+  return text.length > 0 && !SENTENCE_END.test(text);
+}
+
 export function looksFinished(answer: string): boolean {
   const text = answer.trim();
   return text.split(/\s+/).length >= EARLY_COMMIT_MIN_WORDS && SENTENCE_END.test(text);

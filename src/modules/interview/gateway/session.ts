@@ -17,7 +17,11 @@ import { usage } from '@/modules/usage/usage.repository';
 import { runWithContext } from '@/common/context';
 import { DeafDetector, frameRms } from '@/modules/interview/gateway/deaf-detector';
 import { env } from '@/config/env';
-import { earlyCommitHoldMs, looksFinished } from '@/modules/interview/gateway/early-commit';
+import {
+  earlyCommitHoldMs,
+  endsUnfinished,
+  looksFinished,
+} from '@/modules/interview/gateway/early-commit';
 import { prisma } from '@/db/prisma';
 import type { PlanSection } from '@/modules/planner/schema';
 import type { InterviewState } from '@/modules/interview/types';
@@ -369,6 +373,22 @@ export class VoiceSession {
     const answer = this.answerParts.join(' ').trim();
     if (!answer) {
       this.log.debug('utteranceEnd with no transcript — still listening');
+      return;
+    }
+    // Stopped mid-sentence? They're probably still thinking: give them a little longer.
+    // Any new words cancel this wait; a fresh silence signal then decides again.
+    const extraMs = env.TURN_INCOMPLETE_EXTRA_MS;
+    if (extraMs > 0 && endsUnfinished(answer)) {
+      this.cancelEarlyCommit();
+      this.log.debug({ tail: answer.slice(-40), extraMs }, 'answer looks unfinished — waiting');
+      this.earlyCommitTimer = setTimeout(() => {
+        this.earlyCommitTimer = null;
+        if (this.busy || this.closed || this.speaking || this.muted) return;
+        const now = this.answerParts.join(' ').trim();
+        if (!now || now !== answer) return;
+        this.log.info({ ms: Date.now() - this.listeningSince }, 'turn committed after extra wait');
+        void this.finishTurn(now);
+      }, extraMs);
       return;
     }
     this.log.info({ ms: Date.now() - this.listeningSince }, 'turn committed');
