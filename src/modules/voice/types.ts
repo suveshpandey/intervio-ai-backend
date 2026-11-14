@@ -16,6 +16,8 @@ export interface TranscriptChunk {
   text: string;
   /** false = interim (live caption), true = settled text we can act on. */
   isFinal: boolean;
+  /** Deepgram's own pause detector fired (endpointing): the speaker paused after this phrase. */
+  speechFinal?: boolean;
 }
 
 export interface SttCallbacks {

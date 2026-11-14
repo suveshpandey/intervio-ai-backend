@@ -17,6 +17,11 @@ import { usage } from '@/modules/usage/usage.repository';
 import { runWithContext } from '@/common/context';
 import { DeafDetector, frameRms } from '@/modules/interview/gateway/deaf-detector';
 import { env } from '@/config/env';
+import {
+  earlyCommitHoldMs,
+  endsUnfinished,
+  looksFinished,
+} from '@/modules/interview/gateway/early-commit';
 import { prisma } from '@/db/prisma';
 import type { PlanSection } from '@/modules/planner/schema';
 import type { InterviewState } from '@/modules/interview/types';
@@ -40,7 +45,7 @@ function peakAmplitude(frame: Buffer): number {
  * second commit-trigger made the interview hang. Speculation that turns out
  * wrong (they kept talking) is cancelled and costs one cheap model call.
  */
-const SPECULATE_AFTER_MS = 600;
+const SPECULATE_AFTER_MS = 400;
 
 /** How often to check whether the speech stream has gone deaf. */
 const DEAF_CHECK_MS = 1000;
@@ -104,6 +109,11 @@ export class VoiceSession {
     result: Promise<PreparedTurn | null>;
   } | null = null;
   private speculateTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Commits the turn early once a finished sentence has been followed by quiet. */
+  private earlyCommitTimer: ReturnType<typeof setTimeout> | null = null;
+  /** What we've learned about THIS candidate's pauses, so a slow thinker isn't cut off. */
+  private turnsSeen = 0;
+  private maxPauseMs = 0;
   /** Last time the candidate said anything — the start of the silence they sit through. */
   private lastSpeechAt = 0;
 
@@ -201,13 +211,22 @@ export class VoiceSession {
     this.stt = await deepgramStt.openStream({
       sampleRate: STT_SAMPLE_RATE,
       keyterms: this.keyterms,
-      onTranscript: ({ text, isFinal }) => {
+      onTranscript: ({ text, isFinal, speechFinal }) => {
         if (this.speaking) return; // ignore anything picked up while we talk
         this.send({ type: 'transcript', text, isFinal });
         if (text.trim()) {
-          this.lastSpeechAt = Date.now();
-          // They're still talking: no point thinking about an unfinished answer.
+          const now = Date.now();
+          // A silence INSIDE an answer (they paused, then carried on) is exactly what an
+          // early commit must not cut off. Remember the longest one for this candidate.
+          if (this.answerParts.length > 0 && this.lastSpeechAt) {
+            const gap = now - this.lastSpeechAt;
+            if (gap >= 300 && gap < 8000) this.maxPauseMs = Math.max(this.maxPauseMs, gap);
+          }
+          this.lastSpeechAt = now;
+          // They're still talking: no point thinking about an unfinished answer,
+          // and any early commit we had lined up is off.
           this.cancelSpeculateTimer();
+          this.cancelEarlyCommit();
           // Words came back: the stream is hearing them.
           this.deaf.onWords();
           this.setHearing('ok');
@@ -217,6 +236,9 @@ export class VoiceSession {
           this.log.debug({ text: text.slice(0, 60) }, 'final transcript');
           // A settled phrase: if they now stay quiet, start scoring in the background.
           if (text.trim()) this.scheduleSpeculation();
+          // Finished sentence + a pause Deepgram already confirmed: don't wait out the
+          // full utterance-end silence. Any new words cancel this (see above).
+          if (speechFinal && text.trim()) this.scheduleEarlyCommit();
         }
       },
       onUtteranceEnd: () => this.onUtteranceEnd(),
@@ -353,6 +375,22 @@ export class VoiceSession {
       this.log.debug('utteranceEnd with no transcript — still listening');
       return;
     }
+    // Stopped mid-sentence? They're probably still thinking: give them a little longer.
+    // Any new words cancel this wait; a fresh silence signal then decides again.
+    const extraMs = env.TURN_INCOMPLETE_EXTRA_MS;
+    if (extraMs > 0 && endsUnfinished(answer)) {
+      this.cancelEarlyCommit();
+      this.log.debug({ tail: answer.slice(-40), extraMs }, 'answer looks unfinished — waiting');
+      this.earlyCommitTimer = setTimeout(() => {
+        this.earlyCommitTimer = null;
+        if (this.busy || this.closed || this.speaking || this.muted) return;
+        const now = this.answerParts.join(' ').trim();
+        if (!now || now !== answer) return;
+        this.log.info({ ms: Date.now() - this.listeningSince }, 'turn committed after extra wait');
+        void this.finishTurn(now);
+      }, extraMs);
+      return;
+    }
     this.log.info({ ms: Date.now() - this.listeningSince }, 'turn committed');
     void this.finishTurn(answer);
   }
@@ -369,6 +407,8 @@ export class VoiceSession {
     if (this.busy || this.closed) return;
     this.busy = true;
     this.answerParts = [];
+    this.turnsSeen++;
+    this.cancelEarlyCommit();
 
     try {
       this.send({ type: 'thinking' });
@@ -405,9 +445,13 @@ export class VoiceSession {
         turnIdx: result.turnIdx,
         sectionKey: result.sectionKey,
       });
-      await this.refreshState();
+      // The browser's progress update must not delay the interviewer's voice.
+      const stateSent = this.refreshState().catch((err: unknown) =>
+        this.log.warn({ err }, 'state refresh failed'),
+      );
       const tSpeakStart = Date.now();
       const firstByteMs = await this.speak(result.question);
+      await stateSent;
       this.log.info(
         {
           engineMs: tEngine,
@@ -582,6 +626,38 @@ export class VoiceSession {
     }, SPECULATE_AFTER_MS);
   }
 
+  private cancelEarlyCommit(): void {
+    if (this.earlyCommitTimer) clearTimeout(this.earlyCommitTimer);
+    this.earlyCommitTimer = null;
+  }
+
+  /**
+   * Commit before Deepgram's slow utterance-end fires, but only when it's safe
+   * (see early-commit.ts): the answer looks finished, and the hold adapts to how
+   * long this candidate pauses mid-answer — pausers never get an early commit.
+   * Anything else still waits for the normal signal. Committing twice is harmless: a started turn clears the answer, so the
+   * later utterance-end finds nothing to commit.
+   */
+  private scheduleEarlyCommit(): void {
+    this.cancelEarlyCommit();
+    const holdMs = earlyCommitHoldMs(env.TURN_EARLY_COMMIT_MS, this.turnsSeen, this.maxPauseMs);
+    if (holdMs <= 0) return;
+    const answer = this.answerParts.join(' ').trim();
+    if (!looksFinished(answer)) return;
+    this.earlyCommitTimer = setTimeout(() => {
+      this.earlyCommitTimer = null;
+      if (this.busy || this.closed || this.speaking || this.muted) return;
+      // Re-check: more words may have been added since the timer was set.
+      const now = this.answerParts.join(' ').trim();
+      if (now !== answer) return;
+      this.log.info(
+        { ms: Date.now() - this.listeningSince, holdMs, maxPauseMs: this.maxPauseMs },
+        'turn committed early',
+      );
+      void this.finishTurn(now);
+    }, holdMs);
+  }
+
   private startSpeculation(): void {
     if (this.closed || this.speaking || this.busy || this.muted) return;
     const answer = this.answerParts.join(' ').trim();
@@ -670,6 +746,7 @@ export class VoiceSession {
     if (this.deafTimer) clearInterval(this.deafTimer);
     this.bufferedAudio = [];
     this.dropSpeculation();
+    this.cancelEarlyCommit();
     this.meterAudio();
     this.stt?.close();
     this.tts?.close();
