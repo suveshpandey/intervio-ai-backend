@@ -68,6 +68,12 @@ const schema = z.object({
   DEEPGRAM_API_KEY: z.string().optional(),
   DEEPGRAM_STT_MODEL: z.string().default('nova-3'),
   DEEPGRAM_TTS_MODEL: z.string().default('flux-marcus-en'),
+  /**
+   * Commit a turn early when the candidate's last sentence is clearly finished
+   * (Deepgram saw a pause AND the text ends in . ? !) and they've stayed quiet this
+   * many ms. 0 turns it off, leaving only Deepgram's slower utterance-end signal.
+   */
+  TURN_EARLY_COMMIT_MS: z.coerce.number().int().min(0).max(5000).default(1200),
 
   /**
    * Daily allowances per person (rolling 24h), counted per account, per browser

@@ -29,7 +29,8 @@ export const VOICES: VoiceOption[] = [
     name: 'Marcus',
     accent: 'American',
     description: 'Friendly and warm',
-    sampleUrl: 'https://cdn.sanity.io/files/0dsbfl6j/production/8ec4362caf78524acf72c63705924fd27d24de76.wav',
+    sampleUrl:
+      'https://cdn.sanity.io/files/0dsbfl6j/production/8ec4362caf78524acf72c63705924fd27d24de76.wav',
     speed: 1,
     expressivity: 2,
   },
@@ -38,7 +39,8 @@ export const VOICES: VoiceOption[] = [
     name: 'Priya',
     accent: 'Indian',
     description: 'Calm and reassuring',
-    sampleUrl: 'https://cdn.sanity.io/files/0dsbfl6j/production/04999a9b5cec712e3ee2c8a2b6db61583441bf1e.wav',
+    sampleUrl:
+      'https://cdn.sanity.io/files/0dsbfl6j/production/04999a9b5cec712e3ee2c8a2b6db61583441bf1e.wav',
     speed: 0.95,
     expressivity: 0,
   },
@@ -47,7 +49,8 @@ export const VOICES: VoiceOption[] = [
     name: 'Naveen',
     accent: 'Indian',
     description: 'Clear and measured',
-    sampleUrl: 'https://cdn.sanity.io/files/0dsbfl6j/production/675c1ed4eac311d065589b96e180c20c2a5b396c.wav',
+    sampleUrl:
+      'https://cdn.sanity.io/files/0dsbfl6j/production/675c1ed4eac311d065589b96e180c20c2a5b396c.wav',
     speed: 0.95,
     expressivity: 0,
   },

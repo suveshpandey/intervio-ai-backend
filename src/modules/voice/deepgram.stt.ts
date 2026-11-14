@@ -39,6 +39,7 @@ const KEEPALIVE_MS = 5000;
 interface DeepgramMessage {
   type?: string;
   is_final?: boolean;
+  speech_final?: boolean;
   channel?: { alternatives?: { transcript?: string }[] };
 }
 
@@ -91,7 +92,11 @@ export const deepgramStt: SpeechToTextProvider = {
         c.results++;
         const text = msg.channel?.alternatives?.[0]?.transcript ?? '';
         if (text.trim()) {
-          opts.onTranscript({ text, isFinal: Boolean(msg.is_final) });
+          opts.onTranscript({
+            text,
+            isFinal: Boolean(msg.is_final),
+            speechFinal: Boolean(msg.speech_final),
+          });
         } else {
           c.empty++;
           // Proof of life: Deepgram IS processing our audio, it just hears no speech.

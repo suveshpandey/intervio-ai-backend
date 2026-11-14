@@ -294,20 +294,21 @@ export async function submitAnswer(
   });
 
   // 5. Persist the completed turn + any claim evidence.
-  await interviewRepository.answerTurn(answeredTurnId, answer, evaluation, decision.action);
-  if (
+  // The turn row and the evidence row are independent writes: do them together.
+  await Promise.all([
+    interviewRepository.answerTurn(answeredTurnId, answer, evaluation, decision.action),
     probedClaimId &&
     (evaluation.claimEvidence === 'support' || evaluation.claimEvidence === 'weaken')
-  ) {
-    await interviewRepository.addEvidence({
-      interviewId,
-      claimId: probedClaimId,
-      turnId: answeredTurnId,
-      polarity: evaluation.claimEvidence === 'support' ? 'support' : 'weaken',
-      weight: Math.abs(CONFIDENCE_DELTA[evaluation.claimEvidence]) * evaluation.answerQuality,
-      rationale: evaluation.reason.slice(0, 500),
-    });
-  }
+      ? interviewRepository.addEvidence({
+          interviewId,
+          claimId: probedClaimId,
+          turnId: answeredTurnId,
+          polarity: evaluation.claimEvidence === 'support' ? 'support' : 'weaken',
+          weight: Math.abs(CONFIDENCE_DELTA[evaluation.claimEvidence]) * evaluation.answerQuality,
+          rationale: evaluation.reason.slice(0, 500),
+        })
+      : Promise.resolve(),
+  ]);
 
   state.pendingQuestion = null;
   state.pendingTurnId = null;

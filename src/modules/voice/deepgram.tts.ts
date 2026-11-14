@@ -100,7 +100,8 @@ export const deepgramTts: TextToSpeechProvider = {
             chunks.push(data);
           } else {
             try {
-              if ((JSON.parse(data.toString()) as { type?: string }).type === DONE_MESSAGE) done = true;
+              if ((JSON.parse(data.toString()) as { type?: string }).type === DONE_MESSAGE)
+                done = true;
             } catch {
               /* ignore non-JSON control frames */
             }
